@@ -18,6 +18,10 @@ export interface ProviderConfig {
   loggedOutSelector?: string;
   timeoutMs: number;
   stabilizeMs: number;
+  /** Click this to open the model picker dropdown. */
+  modelPickerTrigger?: string;
+  /** Map of model name → selector to click inside the picker. */
+  models?: Record<string, string>;
 }
 
 export interface AppConfig {

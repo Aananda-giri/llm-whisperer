@@ -17,7 +17,9 @@ export function createServer(config: AppConfig, pool: SessionPool) {
 
   app.post("/chat", async (req, res) => {
     const { provider, messages, model, newChat } = req.body ?? {};
-    const target = provider ?? model;
+    // `provider` selects the browser session; `model` switches within it.
+    const target = provider ?? model?.split("/")[0];
+    const modelName = model?.includes("/") ? model.split("/")[1] : undefined;
     const llm = providers.get(target);
 
     if (!llm) {
@@ -32,7 +34,7 @@ export function createServer(config: AppConfig, pool: SessionPool) {
     }
 
     try {
-      const content = await llm.chat(messages as Message[], { newChat });
+      const content = await llm.chat(messages as Message[], { newChat, model: modelName });
       res.json({ provider: target, message: { role: "assistant", content } });
     } catch (err) {
       if (err instanceof LoginRequiredError) {
@@ -61,12 +63,14 @@ export function createServer(config: AppConfig, pool: SessionPool) {
 
   app.post("/v1/chat/completions", async (req, res) => {
     const { model, messages, stream = false, newChat } = req.body ?? {};
-    const llm = providers.get(model);
+    // model field: "qwen" selects the provider; "qwen/qwen2.5-max" also switches model.
+    const [providerKey, modelName] = (model as string ?? "").split("/");
+    const llm = providers.get(providerKey);
 
     if (!llm) {
       res.status(400).json({
         error: {
-          message: `Unknown model "${model}". Available: ${[...providers.keys()].join(", ")}`,
+          message: `Unknown provider "${providerKey}". Available: ${[...providers.keys()].join(", ")}`,
           type: "invalid_request_error",
         },
       });
@@ -101,7 +105,7 @@ export function createServer(config: AppConfig, pool: SessionPool) {
 
       try {
         send({ role: "assistant" });            // opening chunk — role only
-        for await (const delta of llm.stream(messages as Message[], { newChat })) {
+        for await (const delta of llm.stream(messages as Message[], { newChat, model: modelName })) {
           send({ content: delta });
         }
         send({}, "stop");                       // closing chunk — finish_reason
@@ -115,7 +119,7 @@ export function createServer(config: AppConfig, pool: SessionPool) {
     }
 
     try {
-      const content = await llm.chat(messages as Message[], { newChat });
+      const content = await llm.chat(messages as Message[], { newChat, model: modelName });
       res.json({
         id,
         object: "chat.completion",

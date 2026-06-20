@@ -15,6 +15,12 @@ export interface ChatOptions {
    * Set true to wipe the chat and start clean (e.g. new topic / new session).
    */
   newChat?: boolean;
+  /**
+   * Model name to switch to before sending (must be a key in providers.yaml
+   * `models` map and `modelPickerTrigger` must be set). Omit to use whichever
+   * model is currently selected in the browser tab.
+   */
+  model?: string;
 }
 
 /**
@@ -42,6 +48,9 @@ export class WebLLMProvider {
 
       if (options.newChat) {
         await this.newConversation(page);
+      }
+      if (options.model) {
+        await this.switchModel(page, options.model);
       }
 
       const lastUser = [...messages].reverse().find((m) => m.role === "user");
@@ -105,6 +114,16 @@ export class WebLLMProvider {
     }
     await page.goto(this.config.url, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(800);
+  }
+
+  protected async switchModel(page: Page, modelName: string): Promise<void> {
+    const { modelPickerTrigger, models } = this.config;
+    const optionSelector = models?.[modelName];
+    if (!modelPickerTrigger || !optionSelector) return;
+    await page.locator(modelPickerTrigger).first().click().catch(() => {});
+    await page.waitForTimeout(400);
+    await page.locator(optionSelector).first().click().catch(() => {});
+    await page.waitForTimeout(400);
   }
 
   protected async submitPrompt(page: Page, prompt: string): Promise<void> {
