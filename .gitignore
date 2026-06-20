@@ -4,3 +4,5 @@ dist/
 # Persistent browser profiles hold your logged-in sessions/cookies — never commit them.
 profiles/
 *.log
+# Local scratch notes — not part of the project.
+todo
