@@ -1,11 +1,6 @@
 import type { Page } from "playwright";
 import type { BrowserManager } from "./browser.js";
 
-/**
- * Pools and reuses pages per provider so N requests don't open N browsers.
- * Each provider is capped at `maxPerProvider` concurrent pages; extra
- * acquirers wait in a FIFO queue until one is released.
- */
 export class SessionPool {
   private idle = new Map<string, Page[]>();
   private active = new Map<string, number>();
@@ -17,21 +12,25 @@ export class SessionPool {
   ) {}
 
   async acquire(provider: string): Promise<Page> {
+    // Drain stale idle pages first.
     const idle = this.idle.get(provider) ?? [];
-    const page = idle.pop();
-    if (page && !page.isClosed()) {
-      this.idle.set(provider, idle);
-      return page;
+    while (idle.length > 0) {
+      const page = idle.pop()!;
+      if (!page.isClosed()) {
+        this.idle.set(provider, idle);
+        return page;
+      }
+      // Page was closed; don't count it against active.
+      this.active.set(provider, Math.max(0, (this.active.get(provider) ?? 1) - 1));
     }
+    this.idle.set(provider, idle);
 
     const active = this.active.get(provider) ?? 0;
     if (active < this.maxPerProvider) {
       this.active.set(provider, active + 1);
-      const ctx = await this.browser.context(provider);
-      return ctx.newPage();
+      return this.newPage(provider);
     }
 
-    // At capacity — wait for a release.
     return new Promise<Page>((res) => {
       const queue = this.waiters.get(provider) ?? [];
       queue.push(res);
@@ -58,14 +57,23 @@ export class SessionPool {
     this.idle.set(provider, idle);
   }
 
-  // When a released page was already closed, a waiter still needs a fresh page.
+  private async newPage(provider: string): Promise<Page> {
+    try {
+      const ctx = await this.browser.context(provider);
+      return await ctx.newPage();
+    } catch {
+      // Context may have crashed; clear it and relaunch.
+      await this.browser.close(provider);
+      const ctx = await this.browser.context(provider);
+      return ctx.newPage();
+    }
+  }
+
   private async drainOnClosed(provider: string): Promise<void> {
     const queue = this.waiters.get(provider);
     const next = queue?.shift();
     if (!next) return;
-    const active = this.active.get(provider) ?? 0;
-    this.active.set(provider, active + 1);
-    const ctx = await this.browser.context(provider);
-    next(await ctx.newPage());
+    this.active.set(provider, (this.active.get(provider) ?? 0) + 1);
+    next(await this.newPage(provider));
   }
 }

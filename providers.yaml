@@ -25,14 +25,18 @@ providers:
     url: "https://chat.qwen.ai/"
     requiresLogin: true
     loggedOutSelector: "button:has-text('Log in')"
-    # No reliable "New Chat" button; base falls back to reloading the landing page.
-    newChatSelector: ""
+    # Sidebar "New Chat" link becomes visible after any conversation.
+    newChatSelector: "a:has-text('New Chat')"
     inputSelector: "textarea"
-    # Empty send selector => press Enter (Qwen's send arrow only appears after typing).
+    # Empty send selector => press Enter.
     sendSelector: ""
-    responseSelector: "div.markdown-body, [class*='response-message'], [class*='assistant']"
-    timeoutMs: 60000
-    stabilizeMs: 1500
+    # [class*="answer"]:not(button) skips the "Skip" button that appears during
+    # Qwen's thinking phase (which also has a class containing "answer").
+    responseSelector: "[class*='answer']:not(button)"
+    # "Skip" / "Stop" button is visible while Qwen is still thinking/streaming.
+    stopSelector: "button:has-text('Skip'), button:has-text('Stop')"
+    timeoutMs: 90000
+    stabilizeMs: 2000
 
   deepseek:
     url: "https://chat.deepseek.com/"

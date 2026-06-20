@@ -119,9 +119,13 @@ export class WebLLMProvider {
     // 1. Wait for a brand-new response node.
     while ((await responses.count()) <= before) {
       if (Date.now() > deadline) {
-        throw new Error(`${this.name}: timed out waiting for a response to start`);
+        const url = page.url();
+        await page.screenshot({ path: `/tmp/${this.name}-timeout.png` }).catch(() => {});
+        throw new Error(
+          `${this.name}: timed out waiting for a response to start (url=${url}, screenshot=/tmp/${this.name}-timeout.png)`,
+        );
       }
-      await page.waitForTimeout(250);
+      await page.waitForTimeout(500);
     }
 
     // 2. Poll the latest response until its text stabilizes.

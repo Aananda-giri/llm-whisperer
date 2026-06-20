@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { existsSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { BrowserManager } from "./browser.js";
 import { SessionPool } from "./session-pool.js";
@@ -31,7 +33,7 @@ Providers: ${Object.keys(config.providers).join(", ")}`,
   }
 }
 
-function serve(config: ReturnType<typeof loadConfig>) {
+async function serve(config: ReturnType<typeof loadConfig>) {
   const browser = new BrowserManager(config.profilesDir, config.headless);
   const pool = new SessionPool(browser);
   const app = createServer(config, pool);
@@ -49,6 +51,44 @@ function serve(config: ReturnType<typeof loadConfig>) {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  // Open a browser for every provider immediately so the window is visible
+  // on startup and the first request doesn't wait for browser launch.
+  await warmProviders(config, pool);
+}
+
+async function warmProviders(
+  config: ReturnType<typeof loadConfig>,
+  pool: SessionPool,
+) {
+  // Only warm providers that have a saved profile (i.e. user has logged in).
+  // Skip providers without a profile to avoid launching dead browsers.
+  // Warm sequentially to avoid hammering system memory with 5 browsers at once.
+  const names = Object.keys(config.providers).filter((name) => {
+    if (!config.providers[name].requiresLogin) return true;
+    // Only warm if the user has completed login (sentinel written by `login` command).
+    return existsSync(resolve(config.profilesDir, name, ".logged-in"));
+  });
+
+  if (names.length === 0) {
+    console.log("No saved sessions found. Run `pnpm run login <provider>` to log in.");
+    return;
+  }
+
+  console.log(`Warming browsers: ${names.join(", ")}...`);
+  for (const name of names) {
+    const cfg = config.providers[name];
+    try {
+      const page = await pool.acquire(name);
+      await page
+        .goto(cfg.url, { waitUntil: "domcontentloaded", timeout: 30000 })
+        .catch(() => {});
+      pool.release(name, page);
+      console.log(`  ✓ ${name} ready`);
+    } catch (e) {
+      console.warn(`  ✗ ${name} failed to warm: ${(e as Error).message}`);
+    }
+  }
 }
 
 /**
@@ -77,6 +117,8 @@ async function login(config: ReturnType<typeof loadConfig>, name?: string) {
   });
 
   await browser.close();
+  // Sentinel so warmProviders knows this provider has a real saved session.
+  writeFileSync(resolve(config.profilesDir, name, ".logged-in"), new Date().toISOString());
   console.log(`Saved session for "${name}". It will be reused on headless runs.`);
   process.exit(0);
 }
