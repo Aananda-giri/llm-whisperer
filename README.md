@@ -34,14 +34,23 @@ cp .env.example .env
 
 ## Log in once per provider
 
-Login-gated sites need a one-time manual login (saved for later headless runs):
+The browser that opens is **Playwright's Chromium** (separate from your Brave/Chrome).
+It starts with a fresh profile. To authenticate:
+
+1. Run the login command — a visible Chromium browser opens at the provider's site
+2. Click "Continue with Google" (or log in however that site requires)
+3. Sign into your Google account — Google's account chooser works even in a fresh browser
+4. Once on the chat screen, press **Enter** in the terminal to save the session
 
 ```bash
-pnpm run login qwen      # opens a visible browser; log in, then press Enter
-pnpm run login claude
+pnpm run login qwen      # opens visible browser; log in, press Enter when done
 pnpm run login deepseek
+pnpm run login chatgpt
 # ...etc
 ```
+
+Sessions are saved to `profiles/<provider>/` and reused on all future runs (including headless).
+You only need to do this once per provider.
 
 ## Run the API
 

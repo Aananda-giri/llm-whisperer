@@ -12,7 +12,8 @@
     "serve": "tsx src/cli.ts serve",
     "login": "tsx src/cli.ts login",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/cli.js serve"
+    "start": "node dist/cli.js serve",
+    "chrome": "google-chrome --remote-debugging-port=9222 --user-data-dir=$HOME/.config/llm-whisper-chrome --no-first-run"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
