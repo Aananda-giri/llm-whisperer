@@ -24,6 +24,23 @@ your app ──HTTP──▶ LLM-Whisper API ──▶ session pool ──▶ pe
 - **Robust response detection** — polls the answer until it stops changing,
   instead of relying on a single brittle "done" selector.
 
+## Available providers & models
+
+These are the free web UIs you get access to — no API key, just a browser session.
+
+| Provider key | Site | Model served | Notes |
+|---|---|---|---|
+| `qwen` | chat.qwen.ai | Qwen3.7-Plus | Verified working ✓ |
+| `deepseek` | chat.deepseek.com | DeepSeek V3 / R1 | Login required |
+| `chatgpt` | chatgpt.com | GPT-4o (free tier) | Cloudflare + login |
+| `claude` | claude.ai | Claude Sonnet (free tier) | Login required |
+| `glm` | chat.z.ai | GLM-4 | Login required |
+
+> The model served is whatever the site defaults to for a free account.
+> To use a different model (e.g. switch Qwen to a different variant), log in
+> manually, change the model in the web UI, and that setting persists in your
+> saved session.
+
 ## Setup
 
 ```bash
