@@ -181,7 +181,7 @@ export class WebLLMProvider {
 export class LoginRequiredError extends Error {
   constructor(public provider: string) {
     super(
-      `Not logged in to "${provider}". Run: pnpm run login ${provider}  (opens a visible browser; log in, then press Enter to save the session)`,
+      `Not logged in to "${provider}". Run: whisper login ${provider}  (opens a visible browser; log in, then press Enter to save the session)`,
     );
     this.name = "LoginRequiredError";
   }
