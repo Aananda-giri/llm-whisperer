@@ -1,24 +1,41 @@
 {
   "name": "llm-whisper",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
-  "description": "Whisper to free web LLM chat UIs (Qwen, ChatGPT, Claude, DeepSeek, GLM) and expose them over one local HTTP API.",
+  "description": "Whisper to free web LLM chat UIs (Qwen, ChatGPT, Claude, DeepSeek, GLM) and expose them over one local HTTP API — no API keys needed.",
+  "keywords": ["llm", "ai", "qwen", "deepseek", "chatgpt", "claude", "browser-automation", "playwright"],
+  "homepage": "https://github.com/aananda-giri/llm-whisperer#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aananda-giri/llm-whisperer.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "bin": {
     "whisper": "./dist/cli.js"
   },
+  "files": [
+    "dist/",
+    "providers.yaml",
+    "README.md"
+  ],
   "scripts": {
     "dev": "tsx watch src/cli.ts serve",
     "serve": "tsx src/cli.ts serve",
     "login": "tsx src/cli.ts login",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/cli.js serve",
-    "chrome": "google-chrome --remote-debugging-port=9222 --user-data-dir=$HOME/.config/llm-whisper-chrome --no-first-run"
+    "chrome": "google-chrome --remote-debugging-port=9222 --user-data-dir=$HOME/.config/llm-whisper-chrome --no-first-run",
+    "prepublishOnly": "node node_modules/typescript/bin/tsc -p tsconfig.json"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "js-yaml": "^4.1.0",
+    "playwright": "^1.49.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
@@ -26,7 +43,6 @@
     "@types/express": "^5.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.5",
-    "playwright": "^1.49.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   },

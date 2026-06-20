@@ -41,12 +41,26 @@ These are the free web UIs you get access to — no API key, just a browser sess
 > manually, change the model in the web UI, and that setting persists in your
 > saved session.
 
-## Setup
+## Install
 
 ```bash
+npm install -g llm-whisper
+npx playwright install chromium   # one-time browser download (~170 MB)
+```
+
+Or run without installing:
+
+```bash
+npx llm-whisper serve
+```
+
+### From source
+
+```bash
+git clone https://github.com/aananda-giri/llm-whisperer
+cd llm-whisperer
 pnpm install
 pnpm exec playwright install chromium
-cp .env.example .env
 ```
 
 ## Log in once per provider
@@ -60,9 +74,9 @@ It starts with a fresh profile. To authenticate:
 4. Once on the chat screen, press **Enter** in the terminal to save the session
 
 ```bash
-pnpm run login qwen      # opens visible browser; log in, press Enter when done
-pnpm run login deepseek
-pnpm run login chatgpt
+whisper login qwen      # opens visible browser; log in, press Enter when done
+whisper login deepseek
+whisper login chatgpt
 # ...etc
 ```
 
@@ -72,9 +86,10 @@ You only need to do this once per provider.
 ## Run the API
 
 ```bash
-pnpm serve           # http://localhost:3000
-# or: pnpm dev       # auto-reload during development
+whisper serve        # http://localhost:3000
 ```
+
+From source: `pnpm run serve` (or `pnpm run dev` for auto-reload).
 
 ## Use it
 
@@ -119,6 +134,6 @@ Response shape:
 
 These are free web UIs, so expect breakage: UI updates change selectors,
 aggressive use triggers rate limits / Cloudflare, and sessions eventually
-expire (just `pnpm run login <name>` again). Selectors in `providers.yaml` are
+expire (just `whisper login <name>` again). Selectors in `providers.yaml` are
 best-effort starting points — verify them on first run with `HEADLESS=false`.
 This is for personal, low-volume use; respect each service's terms.

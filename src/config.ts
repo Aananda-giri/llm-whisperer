@@ -1,6 +1,11 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
+
+// Directory of the compiled file (dist/) — used to find bundled providers.yaml.
+const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface ProviderConfig {
   url: string;
@@ -10,7 +15,6 @@ export interface ProviderConfig {
   sendSelector?: string;
   responseSelector: string;
   stopSelector?: string;
-  /** If this selector is visible, we're logged out → raise LoginRequiredError. */
   loggedOutSelector?: string;
   timeoutMs: number;
   stabilizeMs: number;
@@ -29,13 +33,30 @@ const REQUIRED_FIELDS: (keyof ProviderConfig)[] = [
   "responseSelector",
 ];
 
-export function loadConfig(file = "providers.yaml"): AppConfig {
-  const raw = yaml.load(readFileSync(resolve(file), "utf-8")) as {
+function findProvidersFile(explicit?: string): string {
+  const candidates = [
+    explicit,
+    process.env.PROVIDERS_FILE,
+    resolve("providers.yaml"),                     // CWD override
+    join(PKG_ROOT, "providers.yaml"),              // bundled with the package
+  ].filter(Boolean) as string[];
+
+  for (const f of candidates) {
+    if (existsSync(f)) return f;
+  }
+  throw new Error(
+    "providers.yaml not found. Place one in the current directory or set PROVIDERS_FILE.",
+  );
+}
+
+export function loadConfig(file?: string): AppConfig {
+  const configFile = findProvidersFile(file);
+  const raw = yaml.load(readFileSync(configFile, "utf-8")) as {
     providers?: Record<string, Partial<ProviderConfig>>;
   };
 
   if (!raw?.providers || typeof raw.providers !== "object") {
-    throw new Error(`No "providers" map found in ${file}`);
+    throw new Error(`No "providers" map found in ${configFile}`);
   }
 
   const providers: Record<string, ProviderConfig> = {};
@@ -53,10 +74,12 @@ export function loadConfig(file = "providers.yaml"): AppConfig {
     } as ProviderConfig;
   }
 
+  const defaultProfilesDir = join(homedir(), ".config", "llm-whisper", "profiles");
+
   return {
     port: Number(process.env.PORT ?? 3000),
-    profilesDir: process.env.PROFILES_DIR ?? "./profiles",
-    headless: (process.env.HEADLESS ?? "true").toLowerCase() !== "false",
+    profilesDir: process.env.PROFILES_DIR ?? defaultProfilesDir,
+    headless: (process.env.HEADLESS ?? "false").toLowerCase() !== "false",
     providers,
   };
 }
