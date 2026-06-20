@@ -2,16 +2,29 @@
 
 ## Status
 
-| Key | Site | Model | Status |
-|---|---|---|---|
-| `qwen` | chat.qwen.ai | Qwen3.7-Plus | Verified ✓ |
-| `deepseek` | chat.deepseek.com | DeepSeek V3 / R1 | Template — verify selectors |
-| `chatgpt` | chatgpt.com | GPT-4o (free tier) | Template — Cloudflare may block |
-| `claude` | claude.ai | Claude Sonnet (free tier) | Template — verify selectors |
-| `glm` | chat.z.ai | GLM-4 | Template — verify selectors |
+| Key | Site | Model | Login | Status |
+|---|---|---|---|---|
+| `qwen` | chat.qwen.ai | Qwen3.7-Plus | yes | **Verified ✓** |
+| `pi` | pi.ai | Pi (Inflection) | **no** | **Verified ✓** |
+| `deepseek` | chat.deepseek.com | DeepSeek V3 / R1 | yes | Template |
+| `chatgpt` | chatgpt.com | GPT-4o (free tier) | yes | Template — Cloudflare may block |
+| `claude` | claude.ai | Claude Sonnet (free tier) | yes | Template |
+| `glm` | chat.z.ai | GLM-4 | yes | Template |
+| `kimi` | kimi.com | Kimi K2 (Moonshot) | yes | Partial — input/login verified |
+| `minimax` | agent.minimax.io | MiniMax-M3 | yes | Partial — input/login verified |
+| `grok` | grok.com | Grok 3 (xAI) | yes | Partial — input/send verified |
+| `ernie` | yiyan.baidu.com | ERNIE (Baidu) | yes | Partial — input/login verified |
 
-"Template" means the selectors are best-effort starting points based on the
-site's DOM at time of writing. Run with `HEADLESS=false` and verify on first use.
+**Verified ✓** — driven end-to-end; a real message returned a correct response.
+`pi` requires no login, making it the easiest to try first.
+
+**Partial** — input, send, login, and new-chat selectors were confirmed against
+the live DOM, but the `responseSelector` is a best-effort guess (those
+containers only render after a real authenticated message). Verify with
+`HEADLESS=false` on first run.
+
+**Template** — best-effort selectors based on the site's DOM at time of writing.
+Run with `HEADLESS=false` and verify on first use.
 
 ## Logging in
 
@@ -56,6 +69,10 @@ providers:
     stopSelector: ":text('Stop')"         # visible while streaming; gone when done
     timeoutMs: 90000                      # max wait for a response (ms)
     stabilizeMs: 2000                     # text must be unchanged for this long
+    modelPickerTrigger: ""                # (optional) click to open model dropdown
+    models:                               # (optional) name → selector to click
+      "model-a": "li:has-text('Model A')"
+      "model-b": "li:has-text('Model B')"
 ```
 
 All selectors are [Playwright locators](https://playwright.dev/docs/locators) —
@@ -69,6 +86,38 @@ CSS selectors, `:text()`, `:has-text()`, `[attr*=value]`, etc.
 - `stopSelector` is the streaming indicator ("Stop generating", "Skip", etc.).
   When it disappears AND the text stops changing, the answer is considered done.
 - If `sendSelector` is empty, Enter is pressed in the input box instead.
+
+## Model switching
+
+Many sites offer several models behind a picker. To let the API switch between
+them, define two optional fields:
+
+- `modelPickerTrigger` — selector for the control that opens the model dropdown
+- `models` — a map of `model-name → selector` to click inside that dropdown
+
+```yaml
+qwen:
+  # ...
+  modelPickerTrigger: "button[aria-label='Select model']"
+  models:
+    "qwen2.5-max":  "div[role='option']:has-text('Qwen2.5-Max')"
+    "qwen2.5-plus": "div[role='option']:has-text('Qwen2.5-Plus')"
+```
+
+Then request a model with the `provider/model-name` form:
+
+```bash
+curl -s -X POST http://localhost:3000/v1/chat/completions \
+  -d '{"model":"qwen/qwen2.5-max","messages":[{"role":"user","content":"Hi"}]}'
+```
+
+Before sending, LLM-Whisper clicks `modelPickerTrigger`, then the selector for
+`qwen2.5-max`. If either field is empty/unconfigured, the switch is a **no-op**
+and the tab's current model is used — so it's safe to leave the selectors blank
+until you've verified them with `HEADLESS=false`.
+
+> The `models:` maps shipped in the default `providers.yaml` list model **names**
+> but leave the selectors blank. Fill them in after inspecting each site's picker.
 
 ## Fixing broken selectors
 

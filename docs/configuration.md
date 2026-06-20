@@ -12,6 +12,7 @@ in the shell.
 | `PROFILES_DIR` | `~/.config/llm-whisper/profiles` | Where sessions and sentinel files are stored |
 | `PROVIDERS_FILE` | *(see below)* | Path to a custom `providers.yaml` |
 | `CDP_URL` | *(unset)* | Connect to an existing Chrome via CDP instead of launching one |
+| `WHISPER_API_KEY` | *(unset)* | If set, require this key on all endpoints except `/health` |
 
 ### HEADLESS
 
@@ -65,6 +66,34 @@ CDP_URL=http://localhost:9222 whisper serve
 ```
 
 A helper script is included in the repo: `pnpm run chrome`.
+
+### WHISPER_API_KEY
+
+By default the API is open — anyone who can reach the port can use it. That's
+fine for `localhost`, but if you bind to a LAN address or expose it, set a key:
+
+```bash
+WHISPER_API_KEY=my-secret-key whisper serve
+```
+
+When set, every endpoint **except `GET /health`** requires the key, supplied via
+either header:
+
+```bash
+curl http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer my-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen","messages":[{"role":"user","content":"Hi"}]}'
+
+# or:
+curl http://localhost:3000/chat \
+  -H "x-api-key: my-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"qwen","messages":[{"role":"user","content":"Hi"}]}'
+```
+
+A missing or wrong key returns `401`. When the variable is unset or empty,
+authentication is disabled (no-op).
 
 ## providers.yaml
 
