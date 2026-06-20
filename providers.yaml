@@ -6,75 +6,204 @@
 # browser devtools to find the new selectors.
 #
 # Fields:
-#   url             : chat page to open
-#   requiresLogin   : if true, you must `whisper login <name>` once first
-#   newChatSelector : (optional) clicked before each prompt to start a clean chat
-#   inputSelector   : the prompt input box (textarea or [contenteditable])
-#   sendSelector    : (optional) send button. If omitted, Enter is pressed instead
-#   responseSelector: matches EVERY assistant message block; the last one is read
-#   stopSelector    : (optional) the "stop generating" control shown while streaming;
-#                     when it disappears the answer is considered done
-#   timeoutMs       : max time to wait for a response
-#   stabilizeMs     : answer is "done" once its text stops changing for this long
+#   url                : chat page to open
+#   requiresLogin      : if true, you must `whisper login <name>` once first
+#   loggedOutSelector  : visible when not authenticated → triggers LoginRequiredError
+#   newChatSelector    : clicked when newChat:true (or page reload if absent)
+#   inputSelector      : the prompt input box (textarea or [contenteditable])
+#   sendSelector       : send button; omit or leave empty to press Enter instead
+#   responseSelector   : matches EVERY assistant message block; last one is read
+#   stopSelector       : "stop generating" control shown while streaming
+#   timeoutMs          : max time to wait for a response (ms)
+#   stabilizeMs        : answer is "done" once its text stops changing for this long
+#   modelPickerTrigger : (optional) click this to open the model picker dropdown
+#   models             : (optional) map of model name → selector to click in picker
 #
-# NOTE: selectors below are best-effort starting points. Qwen is the verified
-# reference. Treat the login-gated ones as templates to confirm on first run.
+# NOTE: ✓ = verified working. Others are best-effort starting points —
+# verify with HEADLESS=false on first run and fix selectors as needed.
 
 providers:
+
+  # ── Qwen (Alibaba) ──────────────────────────────────────────────────────────
+  # ✓ Verified working. requiresLogin via Google OAuth.
   qwen:
     url: "https://chat.qwen.ai/"
     requiresLogin: true
     loggedOutSelector: "button:has-text('Log in')"
-    # Sidebar "New Chat" link becomes visible after any conversation.
     newChatSelector: "a:has-text('New Chat')"
     inputSelector: "textarea"
-    # Empty send selector => press Enter.
     sendSelector: ""
-    # The actual answer sits in div.response-message-content.phase-answer.
-    # Using [class*='phase-answer'] avoids matching the "Skip" button that
-    # appears during Qwen's thinking phase (it has a different class structure).
     responseSelector: "[class*='phase-answer']"
-    # Visible while Qwen is still thinking/streaming. May be a div, not a button.
     stopSelector: ":text('Skip'), :text('Stop generating')"
     timeoutMs: 90000
     stabilizeMs: 2000
+    modelPickerTrigger: ""
+    models:
+      "qwen3-235b":    ""
+      "qwen3-30b":     ""
+      "qwen2.5-max":   ""
+      "qwen2.5-plus":  ""
+      "qwen2.5-coder": ""
 
+  # ── DeepSeek ────────────────────────────────────────────────────────────────
   deepseek:
     url: "https://chat.deepseek.com/"
     requiresLogin: true
-    newChatSelector: "div:has-text('New chat')"
+    loggedOutSelector: "button:has-text('Log in'), a:has-text('Log in')"
+    newChatSelector: "button:has-text('New chat'), a:has-text('New chat')"
     inputSelector: "textarea#chat-input, textarea[placeholder*='Message'], textarea"
     sendSelector: ""
-    responseSelector: "div[class*='ds-markdown'], .message-content"
+    responseSelector: "div[class*='ds-markdown'], [class*='message-content']"
+    stopSelector: "button:has-text('Stop')"
     timeoutMs: 90000
     stabilizeMs: 2000
+    modelPickerTrigger: ""
+    models:
+      "deepseek-v3": ""
+      "deepseek-r1": ""
 
+  # ── ChatGPT (OpenAI) ─────────────────────────────────────────────────────────
+  # Cloudflare protection may block headless — use HEADLESS=false if needed.
   chatgpt:
     url: "https://chatgpt.com/"
     requiresLogin: true
+    loggedOutSelector: "button:has-text('Log in')"
     newChatSelector: "a[data-testid='create-new-chat-button'], button:has-text('New chat')"
     inputSelector: "div#prompt-textarea[contenteditable='true'], [contenteditable='true']"
     sendSelector: "button[data-testid='send-button']"
     responseSelector: "[data-message-author-role='assistant']"
+    stopSelector: "button[aria-label*='Stop'], button:has-text('Stop')"
     timeoutMs: 120000
     stabilizeMs: 2000
+    modelPickerTrigger: ""
+    models:
+      "gpt-4o":      ""
+      "gpt-4o-mini": ""
+      "o1":          ""
+      "o3-mini":     ""
 
+  # ── Claude (Anthropic) ───────────────────────────────────────────────────────
   claude:
     url: "https://claude.ai/new"
     requiresLogin: true
+    loggedOutSelector: "button:has-text('Sign in'), a:has-text('Sign in')"
     newChatSelector: "a[href='/new'], button:has-text('New chat')"
     inputSelector: "div[contenteditable='true'].ProseMirror, [contenteditable='true']"
     sendSelector: "button[aria-label='Send message'], button:has-text('Send')"
     responseSelector: "div.font-claude-message, [data-testid='assistant-message']"
+    stopSelector: "button:has-text('Stop')"
     timeoutMs: 120000
     stabilizeMs: 2000
+    modelPickerTrigger: ""
+    models:
+      "claude-sonnet": ""
+      "claude-haiku":  ""
+      "claude-opus":   ""
 
+  # ── GLM (Zhipu AI) ──────────────────────────────────────────────────────────
   glm:
     url: "https://chat.z.ai/"
     requiresLogin: true
+    loggedOutSelector: "button:has-text('Log in'), a:has-text('Sign in')"
     newChatSelector: "button:has-text('New Chat')"
     inputSelector: "textarea"
     sendSelector: "button[type='submit']"
     responseSelector: "div.markdown-body, [class*='assistant']"
+    stopSelector: "button:has-text('Stop')"
     timeoutMs: 90000
     stabilizeMs: 2000
+    models:
+      "glm-4":      ""
+      "glm-4-plus": ""
+
+  # ── Kimi (Moonshot AI) ──────────────────────────────────────────────────────
+  # DOM-verified: input=div.chat-input-editor, newChat=a.new-chat-btn,
+  # loggedOut=.not-login-container. Response selector needs HEADLESS=false verify.
+  kimi:
+    url: "https://www.kimi.com/"
+    requiresLogin: true
+    loggedOutSelector: ".not-login-container"
+    newChatSelector: "a.new-chat-btn"
+    inputSelector: "div.chat-input-editor"
+    sendSelector: ""
+    responseSelector: "[class*='segment-content'], [class*='message-ai'], [class*='answer-text']"
+    stopSelector: "button:has-text('Stop'), [class*='stop']"
+    timeoutMs: 90000
+    stabilizeMs: 2000
+    models:
+      "kimi-k2":   ""
+      "kimi-k1.5": ""
+
+  # ── MiniMax Agent ────────────────────────────────────────────────────────────
+  # DOM-verified: input=div.tiptap.ProseMirror, loggedOut=button "Sign in".
+  # Model button "MiniMax-M3" visible on page. Response selector needs verify.
+  minimax:
+    url: "https://agent.minimax.io/"
+    requiresLogin: true
+    loggedOutSelector: "button:has-text('Sign in')"
+    newChatSelector: "button:has-text('New task'), button:has-text('New chat')"
+    inputSelector: "div.tiptap.ProseMirror"
+    sendSelector: ""
+    responseSelector: "[class*='message'][class*='assistant'], [class*='response-content'], [class*='answer']"
+    stopSelector: "button:has-text('Stop'), button[aria-label*='stop' i]"
+    timeoutMs: 120000
+    stabilizeMs: 2000
+    modelPickerTrigger: "button:has-text('MiniMax-M3'), button[aria-label*='model' i]"
+    models:
+      "minimax-m3":         "div:has-text('MiniMax-M3')"
+      "minimax-text-01":    "div:has-text('MiniMax-Text-01')"
+
+  # ── Grok (xAI) ──────────────────────────────────────────────────────────────
+  # DOM-verified: input=div.tiptap.ProseMirror[aria-label="Ask Grok anything"],
+  # send=button[aria-label="Submit"], loggedOut=button "Sign in".
+  grok:
+    url: "https://grok.com/"
+    requiresLogin: true
+    loggedOutSelector: "button:has-text('Sign in')"
+    newChatSelector: "a[href='/'], button:has-text('New chat')"
+    inputSelector: "div.tiptap.ProseMirror[aria-label='Ask Grok anything'], div.tiptap.ProseMirror"
+    sendSelector: "button[aria-label='Submit']"
+    responseSelector: "[data-testid*='message'], [class*='response'], [class*='message-bubble']"
+    stopSelector: "button[aria-label*='Stop' i], button:has-text('Stop')"
+    timeoutMs: 120000
+    stabilizeMs: 2000
+    modelPickerTrigger: ""
+    models:
+      "grok-3":       ""
+      "grok-3-mini":  ""
+      "grok-2":       ""
+
+  # ── Pi (Inflection AI) ───────────────────────────────────────────────────────
+  # DOM-verified: no login required, input=textarea[data-testid="chat-composer-textbox"],
+  # send=button[data-testid="chat-composer-submit"], newChat=button[data-testid="nav-new-chat"].
+  # Response selector needs HEADLESS=false verify (Tailwind utility classes only).
+  pi:
+    url: "https://pi.ai/talk"
+    requiresLogin: false
+    newChatSelector: "button[data-testid='nav-new-chat']"
+    inputSelector: "textarea[data-testid='chat-composer-textbox']"
+    sendSelector: "button[data-testid='chat-composer-submit']"
+    responseSelector: "[data-testid*='message'][data-testid*='ai'], [class*='response'], [class*='pi-message']"
+    stopSelector: "button:has-text('Stop'), button[aria-label*='Stop' i]"
+    timeoutMs: 90000
+    stabilizeMs: 2000
+
+  # ── ERNIE / Yiyan (Baidu) ────────────────────────────────────────────────────
+  # DOM-verified: input=[class*="editable"] (contenteditable, CSS modules),
+  # loggedOut=button "Login", chatViewer=#eb_chat_viewer (stable ID).
+  # Chinese-language UI — selectors use English where available, fallback to stable IDs.
+  ernie:
+    url: "https://yiyan.baidu.com/"
+    requiresLogin: true
+    loggedOutSelector: "button:has-text('Login')"
+    newChatSelector: "button:has-text('New'), a:has-text('New')"
+    inputSelector: "[class*='editable'][contenteditable='true'], textarea"
+    sendSelector: ""
+    responseSelector: "#eb_chat_viewer [class*='content'], #eb_chat_viewer [class*='answer']"
+    stopSelector: "button:has-text('Stop')"
+    timeoutMs: 90000
+    stabilizeMs: 2000
+    models:
+      "ernie-5":   ""
+      "ernie-4.5": ""
+      "ernie-4":   ""
