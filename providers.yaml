@@ -30,11 +30,12 @@ providers:
     inputSelector: "textarea"
     # Empty send selector => press Enter.
     sendSelector: ""
-    # [class*="answer"]:not(button) skips the "Skip" button that appears during
-    # Qwen's thinking phase (which also has a class containing "answer").
-    responseSelector: "[class*='answer']:not(button)"
-    # "Skip" / "Stop" button is visible while Qwen is still thinking/streaming.
-    stopSelector: "button:has-text('Skip'), button:has-text('Stop')"
+    # The actual answer sits in div.response-message-content.phase-answer.
+    # Using [class*='phase-answer'] avoids matching the "Skip" button that
+    # appears during Qwen's thinking phase (it has a different class structure).
+    responseSelector: "[class*='phase-answer']"
+    # Visible while Qwen is still thinking/streaming. May be a div, not a button.
+    stopSelector: ":text('Skip'), :text('Stop generating')"
     timeoutMs: 90000
     stabilizeMs: 2000
 
