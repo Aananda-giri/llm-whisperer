@@ -9,13 +9,49 @@ export function createServer(config: AppConfig, pool: SessionPool) {
   const app = express();
   app.use(express.json({ limit: "1mb" }));
 
+  // ── optional API-key authentication ──────────────────────────────────────
+  // When WHISPER_API_KEY is set, gated routes require a matching key supplied
+  // via either `Authorization: Bearer <key>` or `x-api-key: <key>`. When the
+  // env var is unset or empty, authentication is disabled (no-op).
+  const apiKey = process.env.WHISPER_API_KEY ?? "";
+
+  function extractKey(req: express.Request): string | undefined {
+    const auth = req.header("authorization");
+    if (auth && auth.startsWith("Bearer ")) return auth.slice("Bearer ".length).trim();
+    const xApiKey = req.header("x-api-key");
+    if (xApiKey) return xApiKey.trim();
+    return undefined;
+  }
+
+  // OpenAI-style error shape for /v1/* routes.
+  const requireApiKey: express.RequestHandler = (req, res, next) => {
+    if (!apiKey) return next();
+    if (extractKey(req) !== apiKey) {
+      res.status(401).json({
+        error: { message: "Invalid or missing API key.", type: "authentication_error" },
+      });
+      return;
+    }
+    next();
+  };
+
+  // Simpler error shape for the original /chat route.
+  const requireApiKeySimple: express.RequestHandler = (req, res, next) => {
+    if (!apiKey) return next();
+    if (extractKey(req) !== apiKey) {
+      res.status(401).json({ error: "Invalid or missing API key." });
+      return;
+    }
+    next();
+  };
+
   // ── original endpoint ────────────────────────────────────────────────────
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true, providers: [...providers.keys()] });
   });
 
-  app.post("/chat", async (req, res) => {
+  app.post("/chat", requireApiKeySimple, async (req, res) => {
     const { provider, messages, model, newChat } = req.body ?? {};
     // `provider` selects the browser session; `model` switches within it.
     const target = provider ?? model?.split("/")[0];
@@ -48,7 +84,7 @@ export function createServer(config: AppConfig, pool: SessionPool) {
 
   // ── OpenAI-compatible endpoints ──────────────────────────────────────────
 
-  app.get("/v1/models", (_req, res) => {
+  app.get("/v1/models", requireApiKey, (_req, res) => {
     const created = Math.floor(Date.now() / 1000);
     res.json({
       object: "list",
@@ -61,7 +97,7 @@ export function createServer(config: AppConfig, pool: SessionPool) {
     });
   });
 
-  app.post("/v1/chat/completions", async (req, res) => {
+  app.post("/v1/chat/completions", requireApiKey, async (req, res) => {
     const { model, messages, stream = false, newChat } = req.body ?? {};
     // model field: "qwen" selects the provider; "qwen/qwen2.5-max" also switches model.
     const [providerKey, modelName] = (model as string ?? "").split("/");
