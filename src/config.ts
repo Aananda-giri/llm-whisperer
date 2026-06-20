@@ -10,6 +10,8 @@ export interface ProviderConfig {
   sendSelector?: string;
   responseSelector: string;
   stopSelector?: string;
+  /** If this selector is visible, we're logged out → raise LoginRequiredError. */
+  loggedOutSelector?: string;
   timeoutMs: number;
   stabilizeMs: number;
 }

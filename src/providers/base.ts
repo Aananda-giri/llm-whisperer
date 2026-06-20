@@ -53,6 +53,19 @@ export class WebLLMProvider {
 
   protected async ensureLoggedIn(page: Page): Promise<void> {
     if (!this.config.requiresLogin) return;
+
+    // Prefer an explicit "logged out" marker (e.g. a visible Log in button).
+    if (this.config.loggedOutSelector) {
+      const out = await page
+        .locator(this.config.loggedOutSelector)
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (out) throw new LoginRequiredError(this.name);
+      return;
+    }
+
+    // Fallback: if the input box never appears, assume we're gated.
     const input = page.locator(this.config.inputSelector).first();
     const visible = await input.isVisible().catch(() => false);
     if (!visible) {
@@ -61,12 +74,17 @@ export class WebLLMProvider {
   }
 
   protected async newConversation(page: Page): Promise<void> {
-    if (!this.config.newChatSelector) return;
-    const btn = page.locator(this.config.newChatSelector).first();
-    if (await btn.isVisible().catch(() => false)) {
-      await btn.click().catch(() => {});
-      await page.waitForTimeout(400);
+    if (this.config.newChatSelector) {
+      const btn = page.locator(this.config.newChatSelector).first();
+      if (await btn.isVisible().catch(() => false)) {
+        await btn.click().catch(() => {});
+        await page.waitForTimeout(400);
+        return;
+      }
     }
+    // No explicit "new chat" control — reload the landing page for a clean slate.
+    await page.goto(this.config.url, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(800);
   }
 
   protected async submitPrompt(page: Page, prompt: string): Promise<void> {
@@ -149,7 +167,7 @@ export class WebLLMProvider {
 export class LoginRequiredError extends Error {
   constructor(public provider: string) {
     super(
-      `Not logged in to "${provider}". Run: pnpm login ${provider}  (logs in with a visible browser, session is saved)`,
+      `Not logged in to "${provider}". Run: pnpm run login ${provider}  (opens a visible browser; log in, then press Enter to save the session)`,
     );
     this.name = "LoginRequiredError";
   }

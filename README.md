@@ -37,9 +37,9 @@ cp .env.example .env
 Login-gated sites need a one-time manual login (saved for later headless runs):
 
 ```bash
-pnpm login qwen      # opens a visible browser; log in, then press Enter
-pnpm login claude
-pnpm login deepseek
+pnpm run login qwen      # opens a visible browser; log in, then press Enter
+pnpm run login claude
+pnpm run login deepseek
 # ...etc
 ```
 
@@ -80,6 +80,6 @@ Response:
 
 These are free web UIs, so expect breakage: UI updates change selectors,
 aggressive use triggers rate limits / Cloudflare, and sessions eventually
-expire (just `pnpm login <name>` again). Selectors in `providers.yaml` are
+expire (just `pnpm run login <name>` again). Selectors in `providers.yaml` are
 best-effort starting points — verify them on first run with `HEADLESS=false`.
 This is for personal, low-volume use; respect each service's terms.

@@ -24,10 +24,13 @@ providers:
   qwen:
     url: "https://chat.qwen.ai/"
     requiresLogin: true
-    newChatSelector: "button:has-text('New Chat')"
+    loggedOutSelector: "button:has-text('Log in')"
+    # No reliable "New Chat" button; base falls back to reloading the landing page.
+    newChatSelector: ""
     inputSelector: "textarea"
-    sendSelector: "button[type='submit']"
-    responseSelector: "div.markdown-body, .assistant-message, [class*='assistant']"
+    # Empty send selector => press Enter (Qwen's send arrow only appears after typing).
+    sendSelector: ""
+    responseSelector: "div.markdown-body, [class*='response-message'], [class*='assistant']"
     timeoutMs: 60000
     stabilizeMs: 1500
 
