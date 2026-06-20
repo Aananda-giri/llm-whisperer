@@ -174,19 +174,24 @@ providers:
       "grok-2":       ""
 
   # ── Pi (Inflection AI) ───────────────────────────────────────────────────────
-  # DOM-verified: no login required, input=textarea[data-testid="chat-composer-textbox"],
-  # send=button[data-testid="chat-composer-submit"], newChat=button[data-testid="nav-new-chat"].
-  # Response selector needs HEADLESS=false verify (Tailwind utility classes only).
+  # ✓ VERIFIED end-to-end (no login required). Sent a real message and confirmed:
+  #   input  = textarea[data-testid="chat-composer-textbox"]
+  #   send   = button[data-testid="chat-composer-submit"]
+  #   newChat= button[data-testid="nav-new-chat"]
+  #   response container = div.text-body-alt-m.whitespace-pre-wrap
+  #     (this class is used ONLY by Pi's assistant turns — user messages use a
+  #      different class, so it is naturally excluded; .last() = the answer)
+  # No stopSelector: Pi has no reliable streaming indicator, so we rely on text
+  # stabilization (stabilizeMs) to detect completion.
   pi:
     url: "https://pi.ai/talk"
     requiresLogin: false
     newChatSelector: "button[data-testid='nav-new-chat']"
     inputSelector: "textarea[data-testid='chat-composer-textbox']"
     sendSelector: "button[data-testid='chat-composer-submit']"
-    responseSelector: "[data-testid*='message'][data-testid*='ai'], [class*='response'], [class*='pi-message']"
-    stopSelector: "button:has-text('Stop'), button[aria-label*='Stop' i]"
+    responseSelector: "div.text-body-alt-m.whitespace-pre-wrap"
     timeoutMs: 90000
-    stabilizeMs: 2000
+    stabilizeMs: 1500
 
   # ── ERNIE / Yiyan (Baidu) ────────────────────────────────────────────────────
   # DOM-verified: input=[class*="editable"] (contenteditable, CSS modules),
