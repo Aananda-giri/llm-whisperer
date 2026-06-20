@@ -65,23 +65,28 @@ pnpm exec playwright install chromium
 
 ## Log in once per provider
 
-The browser that opens is **Playwright's Chromium** (separate from your Brave/Chrome).
-It starts with a fresh profile. To authenticate:
+All providers share **one browser window** (one Chromium process). Each provider
+is a separate tab — Chrome partitions cookies by origin, so sessions never
+bleed between sites.
 
-1. Run the login command — a visible Chromium browser opens at the provider's site
-2. Click "Continue with Google" (or log in however that site requires)
-3. Sign into your Google account — Google's account chooser works even in a fresh browser
-4. Once on the chat screen, press **Enter** in the terminal to save the session
+> **Important:** `whisper login` needs the browser profile to be unlocked.
+> Stop `whisper serve` before running login.
+
+1. Run the login command — a Chromium window opens with a new tab at that site:
 
 ```bash
-whisper login qwen      # opens visible browser; log in, press Enter when done
-whisper login deepseek
+whisper login qwen      # opens browser tab at qwen.ai; log in, press Enter
+whisper login deepseek  # opens another tab at deepseek.com
 whisper login chatgpt
 # ...etc
 ```
 
-Sessions are saved to `profiles/<provider>/` and reused on all future runs (including headless).
-You only need to do this once per provider.
+2. Log in (Google OAuth or email — the browser remembers the session)
+3. Press **Enter** in the terminal — the session is saved to the shared profile
+4. Start `whisper serve` — all logged-in providers appear as tabs in one window
+
+Sessions are saved to `~/.config/llm-whisper/profiles/browser/` (shared).
+You only need to do this once per provider; sessions persist across restarts.
 
 ## Run the API
 

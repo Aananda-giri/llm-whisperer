@@ -1,9 +1,9 @@
 import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { chromium as playwrightChromium } from "playwright";
 import { chromium as stealthChromium } from "playwright-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
-import type { Browser, BrowserContext } from "playwright";
+import type { BrowserContext } from "playwright";
 
 stealthChromium.use(StealthPlugin());
 
@@ -14,63 +14,50 @@ const LAUNCH_ARGS = [
 ];
 
 /**
- * Manages one browser context per provider.
+ * Single shared browser window; each provider gets a tab (Page) inside it.
+ * All providers' sessions are stored together in `profilesDir/browser/` —
+ * Chrome partitions cookies by origin, so qwen.ai, deepseek.com, etc. never
+ * bleed into each other.
  *
  * Two modes (controlled by CDP_URL env var):
  *
- *  CDP mode  — Attaches to an already-running Chrome via `CDP_URL`
- *              (e.g. http://localhost:9222). All providers share the
- *              same browser; every provider gets its own incognito context
- *              so sessions don't bleed into each other.
- *              Use `pnpm run chrome` to start Chrome in this mode.
+ *  Profile mode (default) — Launches Playwright's Chromium with one shared
+ *              persistent profile. Run `whisper login <provider>` (with serve
+ *              stopped) once per provider to authenticate.
  *
- *  Profile mode (default) — Launches Playwright's bundled Chromium with a
- *              per-provider persistent profile under `PROFILES_DIR`.
- *              Run `pnpm run login <provider>` once to authenticate.
+ *  CDP mode — Attaches to an already-running Chrome via `CDP_URL`
+ *              (e.g. http://localhost:9222). Reuses the browser's existing
+ *              default context; no persistent profile needed.
  */
 export class BrowserManager {
-  private contexts = new Map<string, Promise<BrowserContext>>();
-  private cdpBrowser: Promise<Browser> | null = null;
+  private sharedContext: Promise<BrowserContext> | null = null;
 
   constructor(
     private profilesDir: string,
     private headless: boolean,
     private cdpUrl: string | null = process.env.CDP_URL ?? null,
-  ) {
-    if (!cdpUrl) {
-      mkdirSync(resolve(profilesDir), { recursive: true });
+  ) {}
+
+  context(opts?: { headless?: boolean }): Promise<BrowserContext> {
+    if (this.cdpUrl) {
+      if (!this.sharedContext) this.sharedContext = this.cdpContext();
+      return this.sharedContext;
     }
-  }
-
-  context(provider: string, opts?: { headless?: boolean }): Promise<BrowserContext> {
-    const existing = this.contexts.get(provider);
-    if (existing) return existing;
-
-    const ctx = this.cdpUrl
-      ? this.cdpContext(provider)
-      : this.profileContext(provider, opts?.headless ?? this.headless);
-
-    this.contexts.set(provider, ctx);
-    return ctx;
-  }
-
-  private async cdpContext(provider: string): Promise<BrowserContext> {
-    if (!this.cdpBrowser) {
-      console.log(`[browser] Connecting to Chrome via CDP at ${this.cdpUrl}`);
-      this.cdpBrowser = playwrightChromium.connectOverCDP(this.cdpUrl!);
+    if (!this.sharedContext) {
+      this.sharedContext = this.profileContext(opts?.headless ?? this.headless);
     }
-    const browser = await this.cdpBrowser;
-    // Each provider gets its own incognito context so cookies don't mix.
-    // Exception: providers that need the user's real logged-in session should
-    // reuse the default context — but incognito + manual login-per-context is
-    // fine for our use case.
-    return browser.newContext({
-      viewport: { width: 1280, height: 900 },
-    });
+    return this.sharedContext;
   }
 
-  private profileContext(provider: string, headless: boolean): Promise<BrowserContext> {
-    const userDataDir = resolve(this.profilesDir, provider);
+  private async cdpContext(): Promise<BrowserContext> {
+    console.log(`[browser] Connecting to Chrome via CDP at ${this.cdpUrl}`);
+    const browser = await playwrightChromium.connectOverCDP(this.cdpUrl!);
+    return browser.contexts()[0] ?? browser.newContext({ viewport: { width: 1280, height: 900 } });
+  }
+
+  private profileContext(headless: boolean): Promise<BrowserContext> {
+    const userDataDir = resolve(join(this.profilesDir, "browser"));
+    mkdirSync(userDataDir, { recursive: true });
     return stealthChromium.launchPersistentContext(userDataDir, {
       headless,
       viewport: { width: 1280, height: 900 },
@@ -80,21 +67,10 @@ export class BrowserManager {
     }) as Promise<BrowserContext>;
   }
 
-  async close(provider?: string): Promise<void> {
-    if (provider) {
-      const ctx = this.contexts.get(provider);
-      if (ctx) {
-        await (await ctx).close().catch(() => {});
-        this.contexts.delete(provider);
-      }
-      return;
-    }
-    await Promise.all(
-      [...this.contexts.values()].map(async (c) => (await c).close().catch(() => {})),
-    );
-    this.contexts.clear();
-    if (this.cdpBrowser) {
-      await (await this.cdpBrowser).close().catch(() => {});
+  async close(): Promise<void> {
+    if (this.sharedContext) {
+      await (await this.sharedContext).close().catch(() => {});
+      this.sharedContext = null;
     }
   }
 }

@@ -20,7 +20,6 @@ export class SessionPool {
         this.idle.set(provider, idle);
         return page;
       }
-      // Page was closed; don't count it against active.
       this.active.set(provider, Math.max(0, (this.active.get(provider) ?? 1) - 1));
     }
     this.idle.set(provider, idle);
@@ -57,15 +56,14 @@ export class SessionPool {
     this.idle.set(provider, idle);
   }
 
-  private async newPage(provider: string): Promise<Page> {
+  private async newPage(_provider: string): Promise<Page> {
     try {
-      const ctx = await this.browser.context(provider);
+      const ctx = await this.browser.context();
       return await ctx.newPage();
     } catch {
-      // Context may have crashed; clear it and relaunch.
-      await this.browser.close(provider);
-      const ctx = await this.browser.context(provider);
-      return ctx.newPage();
+      // Shared context crashed; relaunch the whole browser and retry once.
+      await this.browser.close();
+      return (await this.browser.context()).newPage();
     }
   }
 

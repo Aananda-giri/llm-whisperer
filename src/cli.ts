@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import "dotenv/config";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { BrowserManager } from "./browser.js";
 import { SessionPool } from "./session-pool.js";
@@ -11,14 +10,13 @@ import { createServer } from "./server.js";
 async function main() {
   const [command, arg] = process.argv.slice(2);
 
-  // Support --help / -h before loading config (which might fail)
   const isHelp = command === "--help" || command === "-h";
   if (!command || isHelp) {
     console.log(`LLM-Whisper — free web LLM bridge
 
 Usage:
   whisper serve            Start the local API on PORT (default 3000)
-  whisper login <name>     Open a visible browser to log in; session is saved
+  whisper login <name>     Open a browser tab to log in; session is saved
   whisper list             List configured providers
 
 Environment:
@@ -82,7 +80,7 @@ async function warmProviders(
     return;
   }
 
-  console.log(`Warming browsers: ${names.join(", ")}...`);
+  console.log(`Warming tabs: ${names.join(", ")}...`);
   for (const name of names) {
     const cfg = config.providers[name];
     try {
@@ -102,15 +100,26 @@ async function login(config: ReturnType<typeof loadConfig>, name?: string) {
     process.exit(1);
   }
   const provider = config.providers[name];
-  const profileDir = join(config.profilesDir, name);
-  mkdirSync(profileDir, { recursive: true });
 
+  // All providers share one browser profile. Chrome locks the profile while
+  // running, so "whisper serve" must be stopped before running login.
   const browser = new BrowserManager(config.profilesDir, false);
-  const ctx = await browser.context(name, { headless: false });
-  const page = ctx.pages()[0] ?? (await ctx.newPage());
+  let ctx: Awaited<ReturnType<typeof browser.context>>;
+  try {
+    ctx = await browser.context({ headless: false });
+  } catch (e) {
+    console.error(
+      `Could not open the browser. If "whisper serve" is running, stop it first —` +
+        ` Chrome locks the profile to one process at a time.`,
+    );
+    console.error((e as Error).message);
+    process.exit(1);
+  }
+
+  const page = await ctx.newPage();
   await page.goto(provider.url, { waitUntil: "domcontentloaded" });
 
-  console.log(`\nA browser opened at ${provider.url}`);
+  console.log(`\nA browser tab opened at ${provider.url}`);
   console.log("Log in, get to the chat screen, then press Enter to save the session.");
 
   await new Promise<void>((res) => {
@@ -119,8 +128,11 @@ async function login(config: ReturnType<typeof loadConfig>, name?: string) {
   });
 
   await browser.close();
-  writeFileSync(join(config.profilesDir, name, ".logged-in"), new Date().toISOString());
-  console.log(`Session saved. It will be reused on future runs.`);
+
+  const sentinelDir = join(config.profilesDir, name);
+  mkdirSync(sentinelDir, { recursive: true });
+  writeFileSync(join(sentinelDir, ".logged-in"), new Date().toISOString());
+  console.log(`Session saved for "${name}". Start "whisper serve" to use it.`);
   process.exit(0);
 }
 
