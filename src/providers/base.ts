@@ -29,7 +29,12 @@ export class WebLLMProvider {
     protected readonly pool: SessionPool,
   ) {}
 
-  async chat(messages: Message[], options: ChatOptions = {}): Promise<string> {
+  /**
+   * Core method: yields text deltas as the LLM streams its response.
+   * Acquires a page from the pool, submits the prompt, streams back deltas,
+   * then releases the page.
+   */
+  async *stream(messages: Message[], options: ChatOptions = {}): AsyncGenerator<string> {
     const page = await this.pool.acquire(this.name);
     try {
       await this.ensureOnPage(page);
@@ -39,18 +44,26 @@ export class WebLLMProvider {
         await this.newConversation(page);
       }
 
-      // When continuing a conversation the web UI already holds the history,
-      // so only send the latest user message. When starting fresh, send the
-      // full messages array as context.
       const lastUser = [...messages].reverse().find((m) => m.role === "user");
-      const prompt = options.newChat ? this.flatten(messages) : (lastUser?.content ?? this.flatten(messages));
+      const prompt = options.newChat
+        ? this.flatten(messages)
+        : (lastUser?.content ?? this.flatten(messages));
 
       const before = await this.countResponses(page);
       await this.submitPrompt(page, prompt);
-      return await this.waitForAnswer(page, before);
+      yield* this.streamAnswer(page, before);
     } finally {
       this.pool.release(this.name, page);
     }
+  }
+
+  /** Convenience wrapper: collects all deltas and returns the full response. */
+  async chat(messages: Message[], options: ChatOptions = {}): Promise<string> {
+    let result = "";
+    for await (const chunk of this.stream(messages, options)) {
+      result += chunk;
+    }
+    return result;
   }
 
   // --- overridable hooks -------------------------------------------------
@@ -64,7 +77,6 @@ export class WebLLMProvider {
   protected async ensureLoggedIn(page: Page): Promise<void> {
     if (!this.config.requiresLogin) return;
 
-    // Prefer an explicit "logged out" marker (e.g. a visible Log in button).
     if (this.config.loggedOutSelector) {
       const out = await page
         .locator(this.config.loggedOutSelector)
@@ -75,7 +87,6 @@ export class WebLLMProvider {
       return;
     }
 
-    // Fallback: if the input box never appears, assume we're gated.
     const input = page.locator(this.config.inputSelector).first();
     const visible = await input.isVisible().catch(() => false);
     if (!visible) {
@@ -92,7 +103,6 @@ export class WebLLMProvider {
         return;
       }
     }
-    // No explicit "new chat" control — reload the landing page for a clean slate.
     await page.goto(this.config.url, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(800);
   }
@@ -111,53 +121,63 @@ export class WebLLMProvider {
     }
   }
 
-  // --- response handling -------------------------------------------------
+  // --- response streaming ------------------------------------------------
 
   protected countResponses(page: Page): Promise<number> {
     return page.locator(this.config.responseSelector).count();
   }
 
   /**
-   * Wait for a new assistant message to appear, then poll its text until it
-   * stops changing (streaming finished) or the stop control disappears.
+   * Polls the latest response element and yields text deltas as the LLM
+   * types. Assumes text is append-only (true for all streaming LLMs).
+   * Non-incremental DOM changes (rare edits) are skipped silently.
    */
-  protected async waitForAnswer(page: Page, before: number): Promise<string> {
+  protected async *streamAnswer(page: Page, before: number): AsyncGenerator<string> {
     const { timeoutMs, stabilizeMs } = this.config;
     const responses = page.locator(this.config.responseSelector);
     const deadline = Date.now() + timeoutMs;
 
-    // 1. Wait for a brand-new response node.
+    // 1. Wait for a brand-new response node to appear.
     while ((await responses.count()) <= before) {
       if (Date.now() > deadline) {
-        const url = page.url();
         await page.screenshot({ path: `/tmp/${this.name}-timeout.png` }).catch(() => {});
         throw new Error(
-          `${this.name}: timed out waiting for a response to start (url=${url}, screenshot=/tmp/${this.name}-timeout.png)`,
+          `${this.name}: timed out waiting for a response to start` +
+            ` (url=${page.url()}, screenshot=/tmp/${this.name}-timeout.png)`,
         );
       }
       await page.waitForTimeout(500);
     }
 
-    // 2. Poll the latest response until its text stabilizes.
-    let last = "";
+    // 2. Poll and yield deltas as text grows.
+    let emitted = "";   // text we've already yielded
+    let last = "";      // last observed text (for stabilization check)
     let stableSince = Date.now();
+
     while (Date.now() < deadline) {
       const text = (await responses.last().innerText().catch(() => "")).trim();
 
-      if (text && text !== last) {
+      if (text !== last) {
         last = text;
         stableSince = Date.now();
+
+        // Only yield the new suffix; skip if text changed non-incrementally.
+        if (text.startsWith(emitted)) {
+          const delta = text.slice(emitted.length);
+          if (delta) {
+            yield delta;
+            emitted = text;
+          }
+        }
       }
 
       const stillStreaming = await this.isStreaming(page);
       if (!stillStreaming && last && Date.now() - stableSince >= stabilizeMs) {
-        return last;
+        return;
       }
       await page.waitForTimeout(300);
     }
-
-    if (last) return last; // best-effort partial answer on timeout
-    throw new Error(`${this.name}: timed out waiting for the response to finish`);
+    // Generator returns without throwing — caller has already received partial output.
   }
 
   protected async isStreaming(page: Page): Promise<boolean> {
@@ -171,9 +191,10 @@ export class WebLLMProvider {
 
   protected flatten(messages: Message[]): string {
     if (messages.length === 1) return messages[0].content;
-    // Web UIs are single-turn from our side; flatten history into one prompt.
     return messages
-      .map((m) => `${m.role === "user" ? "User" : m.role === "assistant" ? "Assistant" : "System"}: ${m.content}`)
+      .map((m) =>
+        `${m.role === "user" ? "User" : m.role === "assistant" ? "Assistant" : "System"}: ${m.content}`,
+      )
       .join("\n\n");
   }
 }
@@ -181,7 +202,8 @@ export class WebLLMProvider {
 export class LoginRequiredError extends Error {
   constructor(public provider: string) {
     super(
-      `Not logged in to "${provider}". Run: whisper login ${provider}  (opens a visible browser; log in, then press Enter to save the session)`,
+      `Not logged in to "${provider}". Run: whisper login ${provider}` +
+        `  (opens a visible browser; log in, then press Enter to save the session)`,
     );
     this.name = "LoginRequiredError";
   }

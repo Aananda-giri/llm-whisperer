@@ -82,13 +82,39 @@ export function createServer(config: AppConfig, pool: SessionPool) {
     const id = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
 
-    try {
-      if (stream) {
-        // Streaming handled after commit 2 — for now fall through to buffered.
-        // Clients that set stream:true will still get a valid (buffered) response.
-        res.setHeader("X-LLM-Whisper-Stream", "buffered-fallback");
-      }
+    if (stream) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders();
 
+      const send = (delta: Partial<{ role: string; content: string }>, finishReason: string | null = null) =>
+        res.write(
+          `data: ${JSON.stringify({
+            id,
+            object: "chat.completion.chunk",
+            created,
+            model,
+            choices: [{ index: 0, delta, finish_reason: finishReason }],
+          })}\n\n`,
+        );
+
+      try {
+        send({ role: "assistant" });            // opening chunk — role only
+        for await (const delta of llm.stream(messages as Message[], { newChat })) {
+          send({ content: delta });
+        }
+        send({}, "stop");                       // closing chunk — finish_reason
+        res.write("data: [DONE]\n\n");
+        res.end();
+      } catch (err) {
+        res.write(`data: ${JSON.stringify({ error: { message: (err as Error).message } })}\n\n`);
+        res.end();
+      }
+      return;
+    }
+
+    try {
       const content = await llm.chat(messages as Message[], { newChat });
       res.json({
         id,
