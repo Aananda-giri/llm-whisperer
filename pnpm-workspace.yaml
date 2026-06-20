@@ -1,0 +1,5 @@
+# Makes this directory its own pnpm workspace root so installs don't get
+# captured by a pnpm-workspace.yaml in a parent directory.
+packages: []
+allowBuilds:
+  esbuild: true

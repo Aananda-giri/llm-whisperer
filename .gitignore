@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.env
+# Persistent browser profiles hold your logged-in sessions/cookies — never commit them.
+profiles/
+*.log

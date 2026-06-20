@@ -1,0 +1,72 @@
+# LLM-Whisper provider definitions.
+#
+# Each provider is driven entirely by config — no code change needed when a UI
+# updates, just fix the selectors here. Selectors are CSS or Playwright
+# locators. When a site changes its DOM, run with HEADLESS=false and use the
+# browser devtools to find the new selectors.
+#
+# Fields:
+#   url             : chat page to open
+#   requiresLogin   : if true, you must `whisper login <name>` once first
+#   newChatSelector : (optional) clicked before each prompt to start a clean chat
+#   inputSelector   : the prompt input box (textarea or [contenteditable])
+#   sendSelector    : (optional) send button. If omitted, Enter is pressed instead
+#   responseSelector: matches EVERY assistant message block; the last one is read
+#   stopSelector    : (optional) the "stop generating" control shown while streaming;
+#                     when it disappears the answer is considered done
+#   timeoutMs       : max time to wait for a response
+#   stabilizeMs     : answer is "done" once its text stops changing for this long
+#
+# NOTE: selectors below are best-effort starting points. Qwen is the verified
+# reference. Treat the login-gated ones as templates to confirm on first run.
+
+providers:
+  qwen:
+    url: "https://chat.qwen.ai/"
+    requiresLogin: true
+    newChatSelector: "button:has-text('New Chat')"
+    inputSelector: "textarea"
+    sendSelector: "button[type='submit']"
+    responseSelector: "div.markdown-body, .assistant-message, [class*='assistant']"
+    timeoutMs: 60000
+    stabilizeMs: 1500
+
+  deepseek:
+    url: "https://chat.deepseek.com/"
+    requiresLogin: true
+    newChatSelector: "div:has-text('New chat')"
+    inputSelector: "textarea#chat-input, textarea[placeholder*='Message'], textarea"
+    sendSelector: ""
+    responseSelector: "div[class*='ds-markdown'], .message-content"
+    timeoutMs: 90000
+    stabilizeMs: 2000
+
+  chatgpt:
+    url: "https://chatgpt.com/"
+    requiresLogin: true
+    newChatSelector: "a[data-testid='create-new-chat-button'], button:has-text('New chat')"
+    inputSelector: "div#prompt-textarea[contenteditable='true'], [contenteditable='true']"
+    sendSelector: "button[data-testid='send-button']"
+    responseSelector: "[data-message-author-role='assistant']"
+    timeoutMs: 120000
+    stabilizeMs: 2000
+
+  claude:
+    url: "https://claude.ai/new"
+    requiresLogin: true
+    newChatSelector: "a[href='/new'], button:has-text('New chat')"
+    inputSelector: "div[contenteditable='true'].ProseMirror, [contenteditable='true']"
+    sendSelector: "button[aria-label='Send message'], button:has-text('Send')"
+    responseSelector: "div.font-claude-message, [data-testid='assistant-message']"
+    timeoutMs: 120000
+    stabilizeMs: 2000
+
+  glm:
+    url: "https://chat.z.ai/"
+    requiresLogin: true
+    newChatSelector: "button:has-text('New Chat')"
+    inputSelector: "textarea"
+    sendSelector: "button[type='submit']"
+    responseSelector: "div.markdown-body, [class*='assistant']"
+    timeoutMs: 90000
+    stabilizeMs: 2000
