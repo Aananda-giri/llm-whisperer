@@ -78,19 +78,32 @@ pnpm serve           # http://localhost:3000
 
 ## Use it
 
+By default each request **continues the same conversation** — the web UI holds the history, so you only need to send the latest message:
+
+```bash
+# Turn 1
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"qwen","messages":[{"role":"user","content":"My name is Ana."}]}'
+
+# Turn 2 — Qwen already knows your name from the browser session
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"qwen","messages":[{"role":"user","content":"What is my name?"}]}'
+```
+
+**Start a fresh conversation** by passing `"newChat": true`:
+
 ```bash
 curl -X POST http://localhost:3000/chat \
   -H "Content-Type: application/json" \
-  -d '{
-    "provider": "qwen",
-    "messages": [{ "role": "user", "content": "What is 2+2?" }]
-  }'
+  -d '{"provider":"qwen","newChat":true,"messages":[{"role":"user","content":"New topic!"}]}'
 ```
 
-Response:
+Response shape:
 
 ```json
-{ "provider": "qwen", "message": { "role": "assistant", "content": "4" } }
+{ "provider": "qwen", "message": { "role": "assistant", "content": "..." } }
 ```
 
 `GET /health` lists the configured providers.

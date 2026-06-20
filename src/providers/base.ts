@@ -8,7 +8,12 @@ export interface Message {
 }
 
 export interface ChatOptions {
-  /** Start a fresh conversation before sending (default true). */
+  /**
+   * Start a fresh conversation before sending.
+   * Default: false — continues the existing conversation so the web UI
+   * maintains history naturally (no need to re-send prior turns).
+   * Set true to wipe the chat and start clean (e.g. new topic / new session).
+   */
   newChat?: boolean;
 }
 
@@ -25,15 +30,20 @@ export class WebLLMProvider {
   ) {}
 
   async chat(messages: Message[], options: ChatOptions = {}): Promise<string> {
-    const prompt = this.flatten(messages);
     const page = await this.pool.acquire(this.name);
     try {
       await this.ensureOnPage(page);
       await this.ensureLoggedIn(page);
 
-      if (options.newChat !== false) {
+      if (options.newChat) {
         await this.newConversation(page);
       }
+
+      // When continuing a conversation the web UI already holds the history,
+      // so only send the latest user message. When starting fresh, send the
+      // full messages array as context.
+      const lastUser = [...messages].reverse().find((m) => m.role === "user");
+      const prompt = options.newChat ? this.flatten(messages) : (lastUser?.content ?? this.flatten(messages));
 
       const before = await this.countResponses(page);
       await this.submitPrompt(page, prompt);
