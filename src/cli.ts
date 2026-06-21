@@ -12,17 +12,18 @@ async function main() {
 
   const isHelp = command === "--help" || command === "-h";
   if (!command || isHelp) {
-    console.log(`LLM-Whisper — free web LLM bridge
+    console.log(`🤫 llm-whisperer — one quiet API for every LLM
 
 Usage:
-  whisper serve            Start the local API on PORT (default 9777)
-  whisper login <name>     Open a browser tab to log in; session is saved
-  whisper list             List configured providers
+  wspr serve            Start the local API on PORT (default 9777)
+  wspr login <name>     Open a browser tab to log in; session is saved
+  wspr list             List configured providers
 
 Environment:
   PORT           API port (default 9777)
   HEADLESS       true/false — hide the browser (default false)
-  PROFILES_DIR   where to store login sessions (default ~/.config/llm-whisper/profiles)
+  BROWSER        browser channel: chromium (default), chrome, msedge, …
+  PROFILES_DIR   where to store login sessions (default ~/.config/llm-whisperer/profiles)
   PROVIDERS_FILE path to a custom providers.yaml`);
     process.exit(isHelp ? 0 : 1);
   }
@@ -38,18 +39,24 @@ Environment:
       console.log("Providers:", Object.keys(config.providers).join(", "));
       return;
     default:
-      console.error(`Unknown command: ${command}. Run whisper --help.`);
+      console.error(`Unknown command: ${command}. Run wspr --help.`);
       process.exit(1);
   }
 }
 
 async function serve(config: ReturnType<typeof loadConfig>) {
-  const browser = new BrowserManager(config.profilesDir, config.headless);
+  const browser = new BrowserManager(config.profilesDir, config.headless, config.browserChannel);
   const pool = new SessionPool(browser);
   const app = createServer(config, pool);
 
+  console.log(`
+       🤫
+  l l m - w h i s p e r e r
+  one quiet API for every LLM
+`);
+
   const server = app.listen(config.port, () => {
-    console.log(`LLM-Whisper listening on http://localhost:${config.port}`);
+    console.log(`listening on http://localhost:${config.port}`);
     console.log(`Providers: ${Object.keys(config.providers).join(", ")}`);
     console.log(`Profiles:  ${config.profilesDir}`);
   });
@@ -71,12 +78,14 @@ async function warmProviders(
   pool: SessionPool,
 ) {
   const names = Object.keys(config.providers).filter((name) => {
-    if (!config.providers[name].requiresLogin) return true;
+    const cfg = config.providers[name];
+    if (cfg.api) return false; // API providers have no browser tab to warm
+    if (!cfg.requiresLogin) return true;
     return existsSync(join(config.profilesDir, name, ".logged-in"));
   });
 
   if (names.length === 0) {
-    console.log("No saved sessions found. Run `whisper login <provider>` to log in.");
+    console.log("No saved sessions found. Run `wspr login <provider>` to log in.");
     return;
   }
 
@@ -102,14 +111,14 @@ async function login(config: ReturnType<typeof loadConfig>, name?: string) {
   const provider = config.providers[name];
 
   // All providers share one browser profile. Chrome locks the profile while
-  // running, so "whisper serve" must be stopped before running login.
-  const browser = new BrowserManager(config.profilesDir, false);
+  // running, so "wspr serve" must be stopped before running login.
+  const browser = new BrowserManager(config.profilesDir, false, config.browserChannel);
   let ctx: Awaited<ReturnType<typeof browser.context>>;
   try {
     ctx = await browser.context({ headless: false });
   } catch (e) {
     console.error(
-      `Could not open the browser. If "whisper serve" is running, stop it first —` +
+      `Could not open the browser. If "wspr serve" is running, stop it first —` +
         ` Chrome locks the profile to one process at a time.`,
     );
     console.error((e as Error).message);
@@ -132,7 +141,7 @@ async function login(config: ReturnType<typeof loadConfig>, name?: string) {
   const sentinelDir = join(config.profilesDir, name);
   mkdirSync(sentinelDir, { recursive: true });
   writeFileSync(join(sentinelDir, ".logged-in"), new Date().toISOString());
-  console.log(`Session saved for "${name}". Start "whisper serve" to use it.`);
+  console.log(`Session saved for "${name}". Start "wspr serve" to use it.`);
   process.exit(0);
 }
 

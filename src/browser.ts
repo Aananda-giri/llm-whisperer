@@ -21,8 +21,9 @@ const LAUNCH_ARGS = [
  *
  * Two modes (controlled by CDP_URL env var):
  *
- *  Profile mode (default) — Launches Playwright's Chromium with one shared
- *              persistent profile. Run `whisper login <provider>` (with serve
+ *  Profile mode (default) — Launches a browser (bundled Chromium by default, or
+ *              the channel set via BROWSER, e.g. "chrome") with one shared
+ *              persistent profile. Run `wspr login <provider>` (with serve
  *              stopped) once per provider to authenticate.
  *
  *  CDP mode — Attaches to an already-running Chrome via `CDP_URL`
@@ -35,6 +36,8 @@ export class BrowserManager {
   constructor(
     private profilesDir: string,
     private headless: boolean,
+    /** Playwright channel (e.g. "chrome"); undefined ⇒ bundled Chromium. */
+    private channel?: string,
     private cdpUrl: string | null = process.env.CDP_URL ?? null,
   ) {}
 
@@ -58,7 +61,11 @@ export class BrowserManager {
   private profileContext(headless: boolean): Promise<BrowserContext> {
     const userDataDir = resolve(join(this.profilesDir, "browser"));
     mkdirSync(userDataDir, { recursive: true });
+    if (this.channel) {
+      console.log(`[browser] Launching ${this.channel} with profile ${userDataDir}`);
+    }
     return stealthChromium.launchPersistentContext(userDataDir, {
+      channel: this.channel,
       headless,
       viewport: { width: 1280, height: 900 },
       args: LAUNCH_ARGS,
