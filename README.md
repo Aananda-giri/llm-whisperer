@@ -120,7 +120,7 @@ sites show the key **only once**, so copy it right away.
 | Groq | <https://console.groq.com/keys> |
 | OpenRouter | <https://openrouter.ai/keys> |
 | Cerebras | <https://cloud.cerebras.ai> → **API Keys** |
-| Mistral | <https://console.mistral.ai> → **API Keys** |
+| Mistral | <https://admin.mistral.ai/organization/api-keys> |
 | Cloudflare | <https://dash.cloudflare.com> → **AI → AI Gateway → Create Authentication Token** (your account id is shown in the sample `curl` on that page) |
 | OpenAI | <https://platform.openai.com/api-keys> |
 | DeepSeek | <https://platform.deepseek.com/api_keys> |
