@@ -118,6 +118,16 @@ sudo apt install -y libnspr4 libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libas
 | Grok | `grok` | ✅ yes |
 | ERNIE | `ernie` | ✅ yes |
 
+Once logged in, use the **provider name as the model**:
+
+```bash
+curl http://localhost:9777/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen","messages":[{"role":"user","content":"Hello!"}]}'
+```
+
+Swap `qwen` for any provider in the table above.
+
 > ⚠️ The browser way automates websites meant for people, which most providers'
 > Terms of Service don't allow. Use it for personal experimenting only, at your
 > own risk. See the Terms-of-Service notes in the [overview](./docs/overview.md).
