@@ -1,10 +1,19 @@
 {
   "name": "llm-whisperer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "type": "module",
   "description": "Whisper to free web LLM chat UIs (Qwen, ChatGPT, Claude, DeepSeek, GLM) and expose them over one local HTTP API — no API keys needed.",
-  "keywords": ["llm", "ai", "qwen", "deepseek", "chatgpt", "claude", "browser-automation", "playwright"],
+  "keywords": [
+    "llm",
+    "ai",
+    "qwen",
+    "deepseek",
+    "chatgpt",
+    "claude",
+    "browser-automation",
+    "playwright"
+  ],
   "homepage": "https://github.com/aananda-giri/llm-whisperer#readme",
   "repository": {
     "type": "git",
@@ -49,7 +58,11 @@
     "typescript": "^5.7.3"
   },
   "pnpm": {
-    "ignoredBuiltDependencies": ["@anthropic-ai/claude-code"],
-    "onlyBuiltDependencies": ["puppeteer-extra-plugin-stealth"]
+    "ignoredBuiltDependencies": [
+      "@anthropic-ai/claude-code"
+    ],
+    "onlyBuiltDependencies": [
+      "puppeteer-extra-plugin-stealth"
+    ]
   }
 }
