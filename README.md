@@ -1,11 +1,11 @@
-# LLM-Whisper
+# LLM-Whisperer
 
 Whisper to the **free web chat UIs** of Qwen, ChatGPT, Claude, DeepSeek, GLM,
 Kimi, MiniMax, Grok, Pi and ERNIE — and talk to all of them through **one local
 HTTP API** (native or OpenAI-compatible, with streaming) — no paid API keys.
 
 ```
-your app ──HTTP──▶ LLM-Whisper ──▶ browser tabs ──▶ chat.qwen.ai / claude.ai / ...
+your app ──HTTP──▶ LLM-Whisperer ──▶ browser tabs ──▶ chat.qwen.ai / claude.ai / ...
 ```
 
 ## ⚠️ Terms of Service disclaimer
@@ -50,7 +50,10 @@ provider's terms.
   SDK) work by just changing the base URL.
 - **Model switching** — request `provider/model-name` to flip the model in the
   web UI before sending.
-- **Optional API key** — set `WHISPER_API_KEY` to gate the API for LAN exposure.
+- **Real API keys too** — already paying for OpenAI, DeepSeek, etc.? Add an
+  API-key provider and it calls the official OpenAI-compatible HTTP API instead
+  of a browser — same endpoints, no scraping. See [API-key providers](#api-key-providers).
+- **Optional API key** — set `WSPR_API_KEY` to gate the API for LAN exposure.
 - **Stealth** — `puppeteer-extra-plugin-stealth` to reduce bot-detection.
 
 ## Available providers & models
@@ -73,17 +76,48 @@ provider's terms.
 > `pi` needs no login — the quickest way to try the tool. See
 > [docs/providers.md](./docs/providers.md) for details and how to fix selectors.
 
+### API-key providers
+
+If you have a real key, you can skip the browser entirely. These call an
+OpenAI-compatible HTTP API and ship in `providers.yaml`:
+
+| Provider key | Endpoint | Default model | Key env var |
+|---|---|---|---|
+| `openai` | api.openai.com | `gpt-4o-mini` | `OPENAI_API_KEY` |
+| `deepseek-api` | api.deepseek.com | `deepseek-chat` | `DEEPSEEK_API_KEY` |
+| `gemini` | generativelanguage.googleapis.com | `gemini-2.5-flash` | `GEMINI_API_KEY` |
+| `groq` | api.groq.com | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
+| `openrouter` | openrouter.ai | `openai/gpt-oss-120b:free` | `OPENROUTER_API_KEY` |
+| `cerebras` | api.cerebras.ai | `gpt-oss-120b` | `CEREBRAS_API_KEY` |
+| `mistral` | api.mistral.ai | `mistral-small-latest` | `MISTRAL_API_KEY` |
+| `cloudflare` | api.cloudflare.com | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` |
+
+> `gemini`, `groq`, `openrouter`, `cerebras`, `mistral`, and `cloudflare` all
+> have **free tiers** (OpenRouter's `:free` models need no credits at all);
+> `openai` and `deepseek-api` are paid. Free quotas, models, and rate limits
+> change often — check each provider's docs for current limits.
+>
+> **Where to get each key** (and the exact Cloudflare steps) is in
+> [docs/providers.md](./docs/providers.md#api-key-providers). `cloudflare` also
+> needs your account id in `CLOUDFLARE_ACCOUNT_ID` (it goes into the request URL).
+
+Set the matching env var (e.g. in `.env`), then use the provider like any other —
+`{"model":"openai"}` or `{"model":"deepseek-api/deepseek-reasoner"}` to pick a
+model. Add any other OpenAI-compatible service (Groq, Together, …) by copying the
+`api:` block. Keys are read from the environment, never stored in the YAML. See
+[docs/providers.md](./docs/providers.md#api-key-providers).
+
 ## Install
 
 ```bash
-npm install -g llm-whisper
+npm install -g llm-whisperer
 npx playwright install chromium   # one-time browser download (~170 MB)
 ```
 
 Or run without installing:
 
 ```bash
-npx llm-whisper serve
+npx llm-whisperer serve
 ```
 
 ## Quick start
@@ -92,7 +126,7 @@ npx llm-whisper serve
 
 ```bash
 # 1. Start the API
-whisper serve
+wspr serve
 
 # 2. Chat (native endpoint)
 curl -s -X POST http://localhost:9777/chat \
@@ -101,7 +135,7 @@ curl -s -X POST http://localhost:9777/chat \
   | jq .message.content
 ```
 
-For login-gated providers like Qwen, run `whisper login qwen` first (with
+For login-gated providers like Qwen, run `wspr login qwen` first (with
 `serve` stopped), then use `"provider":"qwen"`.
 
 ### OpenAI-compatible (with streaming)
@@ -123,15 +157,15 @@ See **[docs/quickstart.md](./docs/quickstart.md)** for a full walkthrough.
 | [docs/quickstart.md](./docs/quickstart.md) | Step-by-step first run |
 | [docs/api.md](./docs/api.md) | HTTP API: `/chat`, OpenAI `/v1/chat/completions`, streaming, model selection, auth |
 | [docs/providers.md](./docs/providers.md) | Provider status, login, selector & model-switching reference |
-| [docs/configuration.md](./docs/configuration.md) | Env vars (`WHISPER_API_KEY`, CDP mode, …), concurrency |
+| [docs/configuration.md](./docs/configuration.md) | Env vars (`WSPR_API_KEY`, CDP mode, …), concurrency |
 | [wiki/pnpm.md](./wiki/pnpm.md) | pnpm usage and publishing notes |
 
 ## Caveats
 
 - UI updates break selectors — run with `HEADLESS=false` to debug, fix in `providers.yaml`
 - Aggressive use triggers rate limits or Cloudflare challenges
-- Sessions expire — run `whisper login <name>` to refresh
-- `whisper login` requires `whisper serve` to be stopped first (Chrome profile lock)
+- Sessions expire — run `wspr login <name>` to refresh
+- `wspr login` requires `wspr serve` to be stopped first (Chrome profile lock)
 - This is for personal, low-volume use; respect each service's terms
 
 ## From source

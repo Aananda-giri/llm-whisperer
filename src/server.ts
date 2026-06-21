@@ -3,6 +3,7 @@ import type { AppConfig } from "./config.js";
 import type { SessionPool } from "./session-pool.js";
 import { buildProviders } from "./providers/factory.js";
 import { LoginRequiredError, type Message } from "./providers/base.js";
+import { ApiKeyMissingError } from "./providers/api.js";
 
 export function createServer(config: AppConfig, pool: SessionPool) {
   const providers = buildProviders(config, pool);
@@ -10,10 +11,10 @@ export function createServer(config: AppConfig, pool: SessionPool) {
   app.use(express.json({ limit: "1mb" }));
 
   // ── optional API-key authentication ──────────────────────────────────────
-  // When WHISPER_API_KEY is set, gated routes require a matching key supplied
+  // When WSPR_API_KEY is set, gated routes require a matching key supplied
   // via either `Authorization: Bearer <key>` or `x-api-key: <key>`. When the
   // env var is unset or empty, authentication is disabled (no-op).
-  const apiKey = process.env.WHISPER_API_KEY ?? "";
+  const apiKey = process.env.WSPR_API_KEY ?? "";
 
   function extractKey(req: express.Request): string | undefined {
     const auth = req.header("authorization");
@@ -73,7 +74,7 @@ export function createServer(config: AppConfig, pool: SessionPool) {
       const content = await llm.chat(messages as Message[], { newChat, model: modelName });
       res.json({ provider: target, message: { role: "assistant", content } });
     } catch (err) {
-      if (err instanceof LoginRequiredError) {
+      if (err instanceof LoginRequiredError || err instanceof ApiKeyMissingError) {
         res.status(401).json({ error: err.message, provider: target });
         return;
       }
@@ -92,7 +93,7 @@ export function createServer(config: AppConfig, pool: SessionPool) {
         id,
         object: "model",
         created,
-        owned_by: "llm-whisper",
+        owned_by: "llm-whisperer",
       })),
     });
   });
@@ -165,7 +166,7 @@ export function createServer(config: AppConfig, pool: SessionPool) {
         usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       });
     } catch (err) {
-      if (err instanceof LoginRequiredError) {
+      if (err instanceof LoginRequiredError || err instanceof ApiKeyMissingError) {
         res.status(401).json({ error: { message: err.message, type: "authentication_error" } });
         return;
       }

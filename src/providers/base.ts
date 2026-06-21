@@ -24,16 +24,47 @@ export interface ChatOptions {
 }
 
 /**
+ * Common contract for everything the server can talk to — whether it drives a
+ * browser tab (WebLLMProvider) or calls a real HTTP API (ApiLLMProvider).
+ */
+export interface LLMProvider {
+  readonly name: string;
+  stream(messages: Message[], options?: ChatOptions): AsyncGenerator<string>;
+  chat(messages: Message[], options?: ChatOptions): Promise<string>;
+}
+
+/**
+ * Shared base: implements `chat()` (collect all deltas) in terms of the
+ * subclass's `stream()`, so each provider type only writes the streaming logic.
+ */
+export abstract class BaseProvider implements LLMProvider {
+  constructor(public readonly name: string) {}
+
+  abstract stream(messages: Message[], options?: ChatOptions): AsyncGenerator<string>;
+
+  /** Convenience wrapper: collects all deltas and returns the full response. */
+  async chat(messages: Message[], options: ChatOptions = {}): Promise<string> {
+    let result = "";
+    for await (const chunk of this.stream(messages, options)) {
+      result += chunk;
+    }
+    return result;
+  }
+}
+
+/**
  * Config-driven web-UI provider. The whole chat flow is generic; the only
  * things that differ per service are the selectors in providers.yaml. Quirky
  * services can subclass and override the protected hooks.
  */
-export class WebLLMProvider {
+export class WebLLMProvider extends BaseProvider {
   constructor(
-    public readonly name: string,
+    name: string,
     protected readonly config: ProviderConfig,
     protected readonly pool: SessionPool,
-  ) {}
+  ) {
+    super(name);
+  }
 
   /**
    * Core method: yields text deltas as the LLM streams its response.
@@ -64,15 +95,6 @@ export class WebLLMProvider {
     } finally {
       this.pool.release(this.name, page);
     }
-  }
-
-  /** Convenience wrapper: collects all deltas and returns the full response. */
-  async chat(messages: Message[], options: ChatOptions = {}): Promise<string> {
-    let result = "";
-    for await (const chunk of this.stream(messages, options)) {
-      result += chunk;
-    }
-    return result;
   }
 
   // --- overridable hooks -------------------------------------------------
@@ -221,7 +243,7 @@ export class WebLLMProvider {
 export class LoginRequiredError extends Error {
   constructor(public provider: string) {
     super(
-      `Not logged in to "${provider}". Run: whisper login ${provider}` +
+      `Not logged in to "${provider}". Run: wspr login ${provider}` +
         `  (opens a visible browser; log in, then press Enter to save the session)`,
     );
     this.name = "LoginRequiredError";

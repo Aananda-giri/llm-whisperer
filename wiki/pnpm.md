@@ -98,7 +98,7 @@ to private. The `prepublishOnly` script in `package.json` automatically runs
 The `files` field in `package.json` controls what's included in the tarball:
 
 ```json
-"files": ["dist/", "docs/", "providers.yaml", "README.md"]
+"files": ["dist/", "docs/", "wiki/", "providers.yaml", "README.md"]
 ```
 
 `node_modules/`, source TypeScript, and dev config are excluded automatically.

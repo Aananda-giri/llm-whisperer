@@ -1,6 +1,6 @@
 # API Reference
 
-LLM-Whisper exposes a small HTTP API on `http://localhost:9777` (configurable
+LLM-Whisperer exposes a small HTTP API on `http://localhost:9777` (configurable
 via `PORT`).
 
 It offers two interfaces:
@@ -14,7 +14,7 @@ It offers two interfaces:
 
 By default the API is **open** (no key required) — convenient for localhost.
 
-If you set the `WHISPER_API_KEY` environment variable, all endpoints except
+If you set the `WSPR_API_KEY` environment variable, all endpoints except
 `GET /health` require a matching key, supplied via either header:
 
 ```
@@ -22,7 +22,7 @@ Authorization: Bearer <key>
 x-api-key: <key>
 ```
 
-A missing/wrong key returns `401`. See [configuration.md](./configuration.md#whisper_api_key).
+A missing/wrong key returns `401`. See [configuration.md](./configuration.md#wspr_api_key).
 
 ---
 
@@ -62,9 +62,15 @@ By default (`newChat` omitted or `false`), only the **last user message** is
 sent to the browser. The web UI already holds the conversation history from
 previous requests, so there is no need to re-send earlier turns.
 
-When `newChat: true`, LLM-Whisper clicks "New Chat" (or reloads the page),
+When `newChat: true`, LLM-Whisperer clicks "New Chat" (or reloads the page),
 then sends all messages flattened into one prompt. Use this to switch topics
 or reset context.
+
+> **API-key providers are different.** Providers with an `api:` block (e.g.
+> `openai`, `deepseek-api`) call a stateless HTTP API — there is no server-side
+> conversation, so send the **full** `messages` history with every request
+> (standard OpenAI behaviour). `newChat` has no effect on them. See
+> [providers.md](./providers.md#api-key-providers).
 
 ### Response
 
@@ -83,7 +89,7 @@ or reset context.
 | HTTP | Body | Meaning |
 |---|---|---|
 | 400 | `{"error":"..."}` | Missing or invalid request fields |
-| 401 | `{"error":"Not logged in to \"qwen\"..."}` | Run `whisper login qwen` |
+| 401 | `{"error":"Not logged in to \"qwen\"..."}` | Run `wspr login qwen` |
 | 500 | `{"error":"..."}` | Browser / timeout error |
 
 ### Example: multi-turn conversation
@@ -111,7 +117,7 @@ curl -s -X POST http://localhost:9777/chat \
 
 OpenAI-compatible chat completions. Point any OpenAI client at
 `http://localhost:9777/v1` and set the API key to anything (or to your
-`WHISPER_API_KEY` if configured).
+`WSPR_API_KEY` if configured).
 
 ### Request
 
@@ -219,7 +225,7 @@ curl http://localhost:9777/v1/models
 {
   "object": "list",
   "data": [
-    { "id": "qwen", "object": "model", "created": 1718900000, "owned_by": "llm-whisper" }
+    { "id": "qwen", "object": "model", "created": 1718900000, "owned_by": "llm-whisperer" }
   ]
 }
 ```

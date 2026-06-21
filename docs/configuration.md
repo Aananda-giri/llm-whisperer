@@ -9,10 +9,12 @@ in the shell.
 |---|---|---|
 | `PORT` | `9777` | Port the HTTP API listens on (see note) |
 | `HEADLESS` | `false` | `true` to hide the browser window |
-| `PROFILES_DIR` | `~/.config/llm-whisper/profiles` | Where sessions and sentinel files are stored |
+| `BROWSER` | `chromium` | Browser channel for profile mode: `chromium`, `chrome`, `msedge`, … |
+| `PROFILES_DIR` | `~/.config/llm-whisperer/profiles` | Where sessions and sentinel files are stored |
 | `PROVIDERS_FILE` | *(see below)* | Path to a custom `providers.yaml` |
 | `CDP_URL` | *(unset)* | Connect to an existing Chrome via CDP instead of launching one |
-| `WHISPER_API_KEY` | *(unset)* | If set, require this key on all endpoints except `/health` |
+| `WSPR_API_KEY` | *(unset)* | If set, require this key on all endpoints except `/health` |
+| `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY`, `CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`), … | *(unset)* | Keys for [API-key providers](#provider-api-keys). The name is set per provider via `keyEnv` in `providers.yaml`; `baseUrl` may also reference `${VAR}` for things like an account id |
 
 ### PORT
 
@@ -25,9 +27,32 @@ it with `PORT` if 9777 is taken on your machine.
 ### HEADLESS
 
 ```bash
-HEADLESS=true whisper serve    # no visible window, runs in background
-HEADLESS=false whisper serve   # see the browser (good for debugging)
+HEADLESS=true wspr serve    # no visible window, runs in background
+HEADLESS=false wspr serve   # see the browser (good for debugging)
 ```
+
+### BROWSER
+
+Selects which browser **profile mode** launches:
+
+| Value | Browser |
+|---|---|
+| `chromium` *(default)* | Playwright's bundled Chromium — zero install, works out of the box |
+| `chrome` | Your locally-installed Google Chrome |
+| `msedge` | Your locally-installed Microsoft Edge |
+
+```bash
+BROWSER=chrome wspr serve
+```
+
+The default is `chromium` so the npm package runs with no extra setup. Switch to
+`BROWSER=chrome` if a provider's login (notably **Google sign-in**) rejects the
+bundled Chromium with *"This browser or app may not be secure"* — a real Chrome
+build passes that check. The named channel must already be installed on your
+machine.
+
+This setting only applies to profile mode. In **CDP mode** (`CDP_URL` set) the
+browser is whichever one you started yourself, so `BROWSER` is ignored.
 
 ### PROFILES_DIR
 
@@ -43,7 +68,7 @@ $PROFILES_DIR/
 Override it if you want sessions stored elsewhere:
 
 ```bash
-PROFILES_DIR=/opt/llm-whisper/sessions whisper serve
+PROFILES_DIR=/opt/llm-whisperer/sessions wspr serve
 ```
 
 ### PROVIDERS_FILE
@@ -51,10 +76,10 @@ PROFILES_DIR=/opt/llm-whisper/sessions whisper serve
 Point to a custom `providers.yaml` anywhere on disk:
 
 ```bash
-PROVIDERS_FILE=~/my-providers.yaml whisper serve
+PROVIDERS_FILE=~/my-providers.yaml wspr serve
 ```
 
-Without this, LLM-Whisper looks for `providers.yaml` in the current directory
+Without this, LLM-Whisperer looks for `providers.yaml` in the current directory
 first, then falls back to the bundled defaults.
 
 ### CDP_URL
@@ -67,21 +92,21 @@ Chrome open permanently.
 # Start Chrome with remote debugging
 google-chrome \
   --remote-debugging-port=9222 \
-  --user-data-dir=$HOME/.config/llm-whisper-chrome
+  --user-data-dir=$HOME/.config/llm-whisperer-chrome
 
-# Tell LLM-Whisper to attach
-CDP_URL=http://localhost:9222 whisper serve
+# Tell LLM-Whisperer to attach
+CDP_URL=http://localhost:9222 wspr serve
 ```
 
 A helper script is included in the repo: `pnpm run chrome`.
 
-### WHISPER_API_KEY
+### WSPR_API_KEY
 
 By default the API is open — anyone who can reach the port can use it. That's
 fine for `localhost`, but if you bind to a LAN address or expose it, set a key:
 
 ```bash
-WHISPER_API_KEY=my-secret-key whisper serve
+WSPR_API_KEY=my-secret-key wspr serve
 ```
 
 When set, every endpoint **except `GET /health`** requires the key, supplied via
@@ -102,6 +127,21 @@ curl http://localhost:9777/chat \
 
 A missing or wrong key returns `401`. When the variable is unset or empty,
 authentication is disabled (no-op).
+
+### Provider API keys
+
+Providers that declare an `api:` block in `providers.yaml` (e.g. `openai`,
+`deepseek-api`) call a real OpenAI-compatible HTTP API instead of driving a
+browser. Each reads its key from the environment variable named by its `keyEnv`
+field — keys are **never** stored in the YAML:
+
+```bash
+OPENAI_API_KEY=sk-...   DEEPSEEK_API_KEY=sk-...   GEMINI_API_KEY=...   wspr serve
+```
+
+If the key is unset, requests to that provider return `401` with a message
+naming the missing variable. Browser providers are unaffected. See
+[providers.md](./providers.md#api-key-providers) for the `api:` block reference.
 
 ## providers.yaml
 

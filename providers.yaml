@@ -1,4 +1,4 @@
-# LLM-Whisper provider definitions.
+# LLM-Whisperer provider definitions.
 #
 # Each provider is driven entirely by config — no code change needed when a UI
 # updates, just fix the selectors here. Selectors are CSS or Playwright
@@ -7,7 +7,7 @@
 #
 # Fields:
 #   url                : chat page to open
-#   requiresLogin      : if true, you must `whisper login <name>` once first
+#   requiresLogin      : if true, you must `wspr login <name>` once first
 #   loggedOutSelector  : visible when not authenticated → triggers LoginRequiredError
 #   newChatSelector    : clicked when newChat:true (or page reload if absent)
 #   inputSelector      : the prompt input box (textarea or [contenteditable])
@@ -212,3 +212,67 @@ providers:
       "ernie-5":   ""
       "ernie-4.5": ""
       "ernie-4":   ""
+
+  # ── API-key providers (OpenAI-compatible) ─────────────────────────────────────
+  # These call a real HTTP API instead of driving a browser, for when you have
+  # an actual key. Any OpenAI-compatible endpoint works (OpenAI, DeepSeek, Groq,
+  # Together, …) — only baseUrl/model/keyEnv differ. The key is read from the
+  # named environment variable at request time; NEVER put keys in this file.
+  # Switch models per request with the "provider/model" form, e.g. "openai/gpt-4o".
+  openai:
+    api:
+      baseUrl: "https://api.openai.com/v1"
+      model: "gpt-4o-mini"
+      keyEnv: "OPENAI_API_KEY"
+
+  deepseek-api:
+    api:
+      baseUrl: "https://api.deepseek.com/v1"
+      model: "deepseek-chat"
+      keyEnv: "DEEPSEEK_API_KEY"
+
+  # Google Gemini via its OpenAI-compatibility layer — has a free tier.
+  # Get a key at https://aistudio.google.com/apikey
+  gemini:
+    api:
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai"
+      model: "gemini-2.5-flash"
+      keyEnv: "GEMINI_API_KEY"
+
+  # Groq — free tier, very fast inference. Key: https://console.groq.com/keys
+  groq:
+    api:
+      baseUrl: "https://api.groq.com/openai/v1"
+      model: "llama-3.3-70b-versatile"
+      keyEnv: "GROQ_API_KEY"
+
+  # OpenRouter — one key, many models incl. ":free" variants.
+  # Key: https://openrouter.ai/keys
+  openrouter:
+    api:
+      baseUrl: "https://openrouter.ai/api/v1"
+      model: "openai/gpt-oss-120b:free"
+      keyEnv: "OPENROUTER_API_KEY"
+
+  # Cerebras — free tier, extremely fast. Key: https://cloud.cerebras.ai
+  cerebras:
+    api:
+      baseUrl: "https://api.cerebras.ai/v1"
+      model: "gpt-oss-120b"
+      keyEnv: "CEREBRAS_API_KEY"
+
+  # Mistral — free experimental tier. Key: https://console.mistral.ai/api-keys
+  mistral:
+    api:
+      baseUrl: "https://api.mistral.ai/v1"
+      model: "mistral-small-latest"
+      keyEnv: "MISTRAL_API_KEY"
+
+  # Cloudflare Workers AI — free daily allowance. The account id goes in the URL
+  # via ${CLOUDFLARE_ACCOUNT_ID} (resolved from the environment). Create an API
+  # token (Workers AI) and find your account id at https://dash.cloudflare.com
+  cloudflare:
+    api:
+      baseUrl: "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1"
+      model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+      keyEnv: "CLOUDFLARE_API_TOKEN"
