@@ -1,4 +1,4 @@
-# LLM-Whisperer
+# 🤫 llm-whisperer
 
 **One simple local API for many AI chat models.**
 

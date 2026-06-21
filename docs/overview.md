@@ -1,4 +1,4 @@
-# LLM-Whisperer — full reference
+# 🤫 llm-whisperer — full reference
 
 > New here? Start with the [project README](../README.md) for a friendly intro.
 > This page is the detailed reference (architecture, every provider, caveats).

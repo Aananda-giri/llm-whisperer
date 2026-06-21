@@ -12,7 +12,7 @@ async function main() {
 
   const isHelp = command === "--help" || command === "-h";
   if (!command || isHelp) {
-    console.log(`LLM-Whisperer — free web LLM bridge
+    console.log(`🤫 llm-whisperer — one quiet API for every LLM
 
 Usage:
   wspr serve            Start the local API on PORT (default 9777)
@@ -49,8 +49,14 @@ async function serve(config: ReturnType<typeof loadConfig>) {
   const pool = new SessionPool(browser);
   const app = createServer(config, pool);
 
+  console.log(`
+       🤫
+  l l m - w h i s p e r e r
+  one quiet API for every LLM
+`);
+
   const server = app.listen(config.port, () => {
-    console.log(`LLM-Whisperer listening on http://localhost:${config.port}`);
+    console.log(`listening on http://localhost:${config.port}`);
     console.log(`Providers: ${Object.keys(config.providers).join(", ")}`);
     console.log(`Profiles:  ${config.profilesDir}`);
   });
