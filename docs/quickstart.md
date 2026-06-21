@@ -9,6 +9,21 @@ npm install -g llm-whisperer
 npx playwright install chromium   # only needed for the browser path (Path B), ~170 MB
 ```
 
+On Linux/WSL, the browser path also needs Chromium system libraries. If
+`wspr login <name>` fails with a missing shared library such as `libnspr4.so`,
+run:
+
+```bash
+sudo npx playwright install-deps chromium
+```
+
+For Ubuntu 24.04/WSL, the common manual fix is:
+
+```bash
+sudo apt update
+sudo apt install -y libnspr4 libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libasound2t64
+```
+
 ## 2. Get a model — pick a path
 
 LLM-Whisperer connects two ways. **Path A (API key)** is the fastest — no

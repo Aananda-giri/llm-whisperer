@@ -90,6 +90,21 @@ These drive the real, free chat websites. You log in once by hand and the
 session is saved. First do `npx playwright install chromium`, then
 `wspr login <name>`.
 
+On Linux/WSL, Chromium also needs system libraries. If `wspr login <name>` fails
+with a missing shared library such as `libnspr4.so`, install Playwright's Linux
+dependencies:
+
+```bash
+sudo npx playwright install-deps chromium
+```
+
+For Ubuntu 24.04/WSL, the common manual fix is:
+
+```bash
+sudo apt update
+sudo apt install -y libnspr4 libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libasound2t64
+```
+
 | Provider | Use as model | Login needed? |
 |---|---|---|
 | Pi | `pi` | ❌ no login — quickest to try! |

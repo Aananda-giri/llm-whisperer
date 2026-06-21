@@ -117,6 +117,13 @@ npm install -g llm-whisperer
 npx playwright install chromium   # one-time browser download (~170 MB)
 ```
 
+On Linux/WSL, browser providers also need Chromium system libraries. If launch
+fails with a missing shared library such as `libnspr4.so`, run:
+
+```bash
+sudo npx playwright install-deps chromium
+```
+
 Or run without installing:
 
 ```bash
