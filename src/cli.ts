@@ -49,6 +49,15 @@ async function serve(config: ReturnType<typeof loadConfig>) {
   const pool = new SessionPool(browser);
   const app = createServer(config, pool);
 
+  const missingKeys = Object.entries(config.providers)
+    .filter(([, c]) => c.api && !process.env[c.api.keyEnv])
+    .map(([name, c]) => `  ⚠ ${name}: set ${c.api!.keyEnv}=... in .env or export it`);
+  if (missingKeys.length > 0) {
+    console.warn("\nMissing API keys — API providers will fail until configured:");
+    console.warn(missingKeys.join("\n"));
+    console.warn("\n  Copy .env.example to .env and fill in your keys, or set them in your shell.\n");
+  }
+
   console.log(`
        🤫
   l l m - w h i s p e r e r
