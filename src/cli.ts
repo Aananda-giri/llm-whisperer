@@ -15,12 +15,12 @@ async function main() {
     console.log(`LLM-Whisper — free web LLM bridge
 
 Usage:
-  whisper serve            Start the local API on PORT (default 3000)
+  whisper serve            Start the local API on PORT (default 9777)
   whisper login <name>     Open a browser tab to log in; session is saved
   whisper list             List configured providers
 
 Environment:
-  PORT           API port (default 3000)
+  PORT           API port (default 9777)
   HEADLESS       true/false — hide the browser (default false)
   PROFILES_DIR   where to store login sessions (default ~/.config/llm-whisper/profiles)
   PROVIDERS_FILE path to a custom providers.yaml`);

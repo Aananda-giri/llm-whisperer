@@ -81,7 +81,8 @@ export function loadConfig(file?: string): AppConfig {
   const defaultProfilesDir = join(homedir(), ".config", "llm-whisper", "profiles");
 
   return {
-    port: Number(process.env.PORT ?? 3000),
+    // 9777 = "WSPR" on a phone keypad; avoids the crowded 3000/5000/8000 range. See docs/configuration.md.
+    port: Number(process.env.PORT ?? 9777),
     profilesDir: process.env.PROFILES_DIR ?? defaultProfilesDir,
     headless: (process.env.HEADLESS ?? "false").toLowerCase() !== "false",
     providers,

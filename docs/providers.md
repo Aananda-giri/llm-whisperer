@@ -107,7 +107,7 @@ qwen:
 Then request a model with the `provider/model-name` form:
 
 ```bash
-curl -s -X POST http://localhost:3000/v1/chat/completions \
+curl -s -X POST http://localhost:9777/v1/chat/completions \
   -d '{"model":"qwen/qwen2.5-max","messages":[{"role":"user","content":"Hi"}]}'
 ```
 

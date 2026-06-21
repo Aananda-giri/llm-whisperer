@@ -7,12 +7,20 @@ in the shell.
 
 | Variable | Default | Description |
 |---|---|---|
-| `PORT` | `3000` | Port the HTTP API listens on |
+| `PORT` | `9777` | Port the HTTP API listens on (see note) |
 | `HEADLESS` | `false` | `true` to hide the browser window |
 | `PROFILES_DIR` | `~/.config/llm-whisper/profiles` | Where sessions and sentinel files are stored |
 | `PROVIDERS_FILE` | *(see below)* | Path to a custom `providers.yaml` |
 | `CDP_URL` | *(unset)* | Connect to an existing Chrome via CDP instead of launching one |
 | `WHISPER_API_KEY` | *(unset)* | If set, require this key on all endpoints except `/health` |
+
+### PORT
+
+The default is `9777`, which spells **WSPR** on a phone keypad (9-7-7-7) — a
+nod to the project name (and to the real-world weak-signal radio protocol of the
+same name, pronounced "whisper"). It avoids the crowded dev-port range
+(3000/5000/8000/8080) so it won't collide with a React app or similar. Override
+it with `PORT` if 9777 is taken on your machine.
 
 ### HEADLESS
 
@@ -80,13 +88,13 @@ When set, every endpoint **except `GET /health`** requires the key, supplied via
 either header:
 
 ```bash
-curl http://localhost:3000/v1/chat/completions \
+curl http://localhost:9777/v1/chat/completions \
   -H "Authorization: Bearer my-secret-key" \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen","messages":[{"role":"user","content":"Hi"}]}'
 
 # or:
-curl http://localhost:3000/chat \
+curl http://localhost:9777/chat \
   -H "x-api-key: my-secret-key" \
   -H "Content-Type: application/json" \
   -d '{"provider":"qwen","messages":[{"role":"user","content":"Hi"}]}'

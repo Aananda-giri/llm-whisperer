@@ -1,6 +1,6 @@
 # API Reference
 
-LLM-Whisper exposes a small HTTP API on `http://localhost:3000` (configurable
+LLM-Whisper exposes a small HTTP API on `http://localhost:9777` (configurable
 via `PORT`).
 
 It offers two interfaces:
@@ -90,17 +90,17 @@ or reset context.
 
 ```bash
 # Turn 1
-curl -s -X POST http://localhost:3000/chat \
+curl -s -X POST http://localhost:9777/chat \
   -H "Content-Type: application/json" \
   -d '{"provider":"qwen","messages":[{"role":"user","content":"My name is Ana."}]}'
 
 # Turn 2 — the browser already knows the context
-curl -s -X POST http://localhost:3000/chat \
+curl -s -X POST http://localhost:9777/chat \
   -H "Content-Type: application/json" \
   -d '{"provider":"qwen","messages":[{"role":"user","content":"What is my name?"}]}'
 
 # Start over
-curl -s -X POST http://localhost:3000/chat \
+curl -s -X POST http://localhost:9777/chat \
   -H "Content-Type: application/json" \
   -d '{"provider":"qwen","newChat":true,"messages":[{"role":"user","content":"Fresh start."}]}'
 ```
@@ -110,7 +110,7 @@ curl -s -X POST http://localhost:3000/chat \
 ## POST /v1/chat/completions
 
 OpenAI-compatible chat completions. Point any OpenAI client at
-`http://localhost:3000/v1` and set the API key to anything (or to your
+`http://localhost:9777/v1` and set the API key to anything (or to your
 `WHISPER_API_KEY` if configured).
 
 ### Request
@@ -155,7 +155,7 @@ format: an opening chunk with `delta.role`, content chunks with `delta.content`
 as the LLM types, a final chunk with `finish_reason: "stop"`, then `data: [DONE]`.
 
 ```bash
-curl -N http://localhost:3000/v1/chat/completions \
+curl -N http://localhost:9777/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen","stream":true,"messages":[{"role":"user","content":"Count to 5 slowly"}]}'
 ```
@@ -168,7 +168,7 @@ appears in the web UI (polled ~3×/second).
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:3000/v1", api_key="not-needed")
+client = OpenAI(base_url="http://localhost:9777/v1", api_key="not-needed")
 
 resp = client.chat.completions.create(
     model="qwen",                       # or "qwen/qwen2.5-max"
@@ -189,12 +189,12 @@ before sending:
 
 ```bash
 # native endpoint
-curl -s -X POST http://localhost:3000/chat \
+curl -s -X POST http://localhost:9777/chat \
   -H "Content-Type: application/json" \
   -d '{"provider":"qwen","model":"qwen/qwen2.5-max","messages":[{"role":"user","content":"Hi"}]}'
 
 # OpenAI endpoint
-curl -s -X POST http://localhost:3000/v1/chat/completions \
+curl -s -X POST http://localhost:9777/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen/qwen2.5-max","messages":[{"role":"user","content":"Hi"}]}'
 ```
@@ -212,7 +212,7 @@ no-op and whichever model is currently selected in the tab is used. See
 OpenAI-compatible model list. Each configured provider is returned as a model.
 
 ```bash
-curl http://localhost:3000/v1/models
+curl http://localhost:9777/v1/models
 ```
 
 ```json
@@ -231,7 +231,7 @@ curl http://localhost:3000/v1/models
 Returns the list of configured providers. Always open (never requires an API key).
 
 ```bash
-curl http://localhost:3000/health
+curl http://localhost:9777/health
 ```
 
 ```json

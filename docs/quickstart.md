@@ -34,7 +34,7 @@ whisper serve
 You should see:
 
 ```
-LLM-Whisper listening on http://localhost:3000
+LLM-Whisper listening on http://localhost:9777
 Providers: qwen, deepseek, chatgpt, claude, glm
 Warming tabs: qwen...
   ✓ qwen ready
@@ -43,7 +43,7 @@ Warming tabs: qwen...
 ## 4. Send your first message
 
 ```bash
-curl -s -X POST http://localhost:3000/chat \
+curl -s -X POST http://localhost:9777/chat \
   -H "Content-Type: application/json" \
   -d '{"provider":"qwen","messages":[{"role":"user","content":"Say hello!"}]}' \
   | jq .
@@ -66,7 +66,7 @@ Response:
 Subsequent requests continue the same chat — the browser holds the history:
 
 ```bash
-curl -s -X POST http://localhost:3000/chat \
+curl -s -X POST http://localhost:9777/chat \
   -H "Content-Type: application/json" \
   -d '{"provider":"qwen","messages":[{"role":"user","content":"What did I just ask you?"}]}' \
   | jq .message.content

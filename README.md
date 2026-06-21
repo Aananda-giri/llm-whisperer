@@ -95,7 +95,7 @@ npx llm-whisper serve
 whisper serve
 
 # 2. Chat (native endpoint)
-curl -s -X POST http://localhost:3000/chat \
+curl -s -X POST http://localhost:9777/chat \
   -H "Content-Type: application/json" \
   -d '{"provider":"pi","messages":[{"role":"user","content":"Hello!"}]}' \
   | jq .message.content
@@ -107,12 +107,12 @@ For login-gated providers like Qwen, run `whisper login qwen` first (with
 ### OpenAI-compatible (with streaming)
 
 ```bash
-curl -N http://localhost:3000/v1/chat/completions \
+curl -N http://localhost:9777/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"pi","stream":true,"messages":[{"role":"user","content":"Count to 5"}]}'
 ```
 
-Or with the `openai` SDK — set `base_url="http://localhost:3000/v1"`.
+Or with the `openai` SDK — set `base_url="http://localhost:9777/v1"`.
 
 See **[docs/quickstart.md](./docs/quickstart.md)** for a full walkthrough.
 
