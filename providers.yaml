@@ -223,6 +223,7 @@ providers:
     api:
       baseUrl: "https://api.openai.com/v1"
       model: "gpt-4o-mini"
+      embedModel: "text-embedding-3-small"   # used by /v1/embeddings
       keyEnv: "OPENAI_API_KEY"
 
   deepseek-api:

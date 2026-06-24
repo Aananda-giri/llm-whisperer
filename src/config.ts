@@ -18,6 +18,12 @@ export interface ApiProviderConfig {
   baseUrl: string;
   /** Default model id sent to the API (overridable per request). */
   model: string;
+  /**
+   * Default model id used for /v1/embeddings (overridable per request).
+   * The chat `model` is usually not an embedding model, so set this when the
+   * provider should answer embedding requests without an explicit model.
+   */
+  embedModel?: string;
   /** Name of the env var holding the API key, e.g. OPENAI_API_KEY. */
   keyEnv: string;
 }

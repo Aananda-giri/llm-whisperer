@@ -2,7 +2,7 @@ import express from "express";
 import type { AppConfig } from "./config.js";
 import type { SessionPool } from "./session-pool.js";
 import { buildProviders } from "./providers/factory.js";
-import { LoginRequiredError, type Message } from "./providers/base.js";
+import { LoginRequiredError, supportsEmbeddings, type Message } from "./providers/base.js";
 import { ApiKeyMissingError } from "./providers/api.js";
 
 export function createServer(config: AppConfig, pool: SessionPool) {
@@ -165,6 +165,52 @@ export function createServer(config: AppConfig, pool: SessionPool) {
         choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
         usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       });
+    } catch (err) {
+      if (err instanceof LoginRequiredError || err instanceof ApiKeyMissingError) {
+        res.status(401).json({ error: { message: err.message, type: "authentication_error" } });
+        return;
+      }
+      console.error(`[${model}]`, err);
+      res.status(500).json({ error: { message: (err as Error).message, type: "server_error" } });
+    }
+  });
+
+  app.post("/v1/embeddings", requireApiKey, async (req, res) => {
+    const { model, input } = req.body ?? {};
+    // model field: "digitalocean" uses the provider's default embedModel;
+    // "digitalocean/bge-m3" also picks the embedding model.
+    const [providerKey, modelName] = (model as string ?? "").split("/");
+    const llm = providers.get(providerKey);
+
+    if (!llm) {
+      res.status(400).json({
+        error: {
+          message: `Unknown provider "${providerKey}". Available: ${[...providers.keys()].join(", ")}`,
+          type: "invalid_request_error",
+        },
+      });
+      return;
+    }
+    if (!supportsEmbeddings(llm)) {
+      res.status(400).json({
+        error: {
+          message: `Provider "${providerKey}" does not support embeddings (only API-key providers do).`,
+          type: "invalid_request_error",
+        },
+      });
+      return;
+    }
+    if (input == null || (Array.isArray(input) && input.length === 0)) {
+      res.status(400).json({
+        error: { message: "`input` is required (a string or array of strings)", type: "invalid_request_error" },
+      });
+      return;
+    }
+
+    try {
+      const result = await llm.embed(input as string | string[], modelName);
+      // Echo back the requested model string (e.g. "digitalocean/bge-m3").
+      res.json({ ...result, model });
     } catch (err) {
       if (err instanceof LoginRequiredError || err instanceof ApiKeyMissingError) {
         res.status(401).json({ error: { message: err.message, type: "authentication_error" } });

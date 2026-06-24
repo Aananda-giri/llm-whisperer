@@ -1,5 +1,11 @@
 import type { ApiProviderConfig, ProviderConfig } from "../config.js";
-import { BaseProvider, type ChatOptions, type Message } from "./base.js";
+import {
+  BaseProvider,
+  type ChatOptions,
+  type EmbeddingProvider,
+  type EmbeddingResponse,
+  type Message,
+} from "./base.js";
 
 /**
  * Calls a real OpenAI-compatible HTTP API (OpenAI, DeepSeek, Groq, Together, …)
@@ -10,7 +16,7 @@ import { BaseProvider, type ChatOptions, type Message } from "./base.js";
  * conversation, so the caller must send the full message history each request
  * (standard OpenAI behaviour). `newChat` is therefore a no-op here.
  */
-export class ApiLLMProvider extends BaseProvider {
+export class ApiLLMProvider extends BaseProvider implements EmbeddingProvider {
   private readonly api: ApiProviderConfig;
 
   constructor(name: string, config: ProviderConfig) {
@@ -51,6 +57,42 @@ export class ApiLLMProvider extends BaseProvider {
     }
 
     yield* parseSSE(res.body);
+  }
+
+  /**
+   * Produces embeddings via the OpenAI-compatible `/embeddings` endpoint.
+   * `model` defaults to the provider's `embedModel`, falling back to its chat
+   * `model` (which most APIs reject for embeddings — set `embedModel` instead).
+   * The upstream OpenAI-shaped response is returned as-is.
+   */
+  async embed(input: string | string[], model?: string): Promise<EmbeddingResponse> {
+    const key = process.env[this.api.keyEnv];
+    if (!key) {
+      throw new ApiKeyMissingError(this.name, this.api.keyEnv);
+    }
+
+    const baseUrl = this.resolveEnv(this.api.baseUrl).replace(/\/+$/, "");
+    const endpoint = `${baseUrl}/embeddings`;
+    const embedModel = model ?? this.api.embedModel ?? this.api.model;
+
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({ model: embedModel, input }),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(
+        `${this.name}: embeddings request failed (${res.status} ${res.statusText})` +
+          (detail ? ` — ${detail.slice(0, 500)}` : ""),
+      );
+    }
+
+    return (await res.json()) as EmbeddingResponse;
   }
 
   /** Substitute `${VAR}` placeholders in a config string from the environment. */

@@ -33,6 +33,35 @@ export interface LLMProvider {
   chat(messages: Message[], options?: ChatOptions): Promise<string>;
 }
 
+/** One embedding vector and its position in the input batch. */
+export interface Embedding {
+  object: "embedding";
+  index: number;
+  embedding: number[];
+}
+
+/** OpenAI-style embeddings response (passed through from the upstream API). */
+export interface EmbeddingResponse {
+  object: "list";
+  data: Embedding[];
+  model: string;
+  usage?: { prompt_tokens: number; total_tokens: number };
+}
+
+/**
+ * Optional capability for providers that can produce embeddings. Only the
+ * HTTP API providers implement this — browser-driven chat UIs cannot. Use
+ * {@link supportsEmbeddings} to check before calling.
+ */
+export interface EmbeddingProvider {
+  embed(input: string | string[], model?: string): Promise<EmbeddingResponse>;
+}
+
+/** Type guard: does this provider expose an `embed()` method? */
+export function supportsEmbeddings(p: LLMProvider): p is LLMProvider & EmbeddingProvider {
+  return typeof (p as Partial<EmbeddingProvider>).embed === "function";
+}
+
 /**
  * Shared base: implements `chat()` (collect all deltas) in terms of the
  * subclass's `stream()`, so each provider type only writes the streaming logic.
