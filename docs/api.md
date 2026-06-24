@@ -9,6 +9,7 @@ It offers two interfaces:
 - **`POST /v1/chat/completions`** — OpenAI-compatible, including streaming,
   so existing OpenAI clients (Cursor, Open WebUI, Continue.dev, LangChain, the
   `openai` SDK) work by just pointing the base URL here.
+- **`POST /v1/embeddings`** — OpenAI-compatible embeddings (API-key providers only).
 
 ## Authentication
 
@@ -136,6 +137,12 @@ OpenAI-compatible chat completions. Point any OpenAI client at
 | `stream` | boolean | no | `true` for Server-Sent Events streaming. Default: `false`. |
 | `newChat` | boolean | no | `true` to start a fresh conversation first |
 
+**Images (vision):** for API-key providers, `content` may be an OpenAI-style
+array of parts (`{"type":"text",...}` + `{"type":"image_url","image_url":{"url":...}}`).
+It is forwarded to the upstream API unchanged, so any vision-capable model works
+(e.g. `digitalocean/llama-4-maverick`). The `url` accepts a `data:` URL (inline
+base64) or a publicly reachable `https://` URL. Browser providers are text-only.
+
 ### Response (non-streaming)
 
 ```json
@@ -227,6 +234,54 @@ curl http://localhost:9777/v1/models
   "data": [
     { "id": "qwen", "object": "model", "created": 1718900000, "owned_by": "llm-whisperer" }
   ]
+}
+```
+
+---
+
+## POST /v1/embeddings
+
+OpenAI-compatible embeddings. **Only API-key providers support this** — calling
+it on a browser provider returns `400`.
+
+### Request
+
+```json
+{
+  "model": "digitalocean",
+  "input": "hello world"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `model` | string | yes | Provider key, or `provider/model-name` to pick the embedding model. Bare provider uses its `embedModel` default. |
+| `input` | string \| string[] | yes | One text, or a batch of texts |
+
+```bash
+# default embedding model (digitalocean -> gte-large-en-v1.5)
+curl http://localhost:9777/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"digitalocean","input":"hello world"}'
+
+# pick the model + batch several inputs
+curl http://localhost:9777/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"digitalocean/bge-m3","input":["first text","second text"]}'
+```
+
+### Response
+
+The upstream OpenAI-shaped response is passed through (one entry per input):
+
+```json
+{
+  "object": "list",
+  "data": [
+    { "object": "embedding", "index": 0, "embedding": [0.0123, -0.0456, "..."] }
+  ],
+  "model": "digitalocean",
+  "usage": { "prompt_tokens": 4, "total_tokens": 4 }
 }
 ```
 

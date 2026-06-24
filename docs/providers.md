@@ -154,8 +154,9 @@ providers:
 
 | Field | Required | Description |
 |---|---|---|
-| `baseUrl` | yes | OpenAI-compatible base; `/chat/completions` is appended. May contain `${VAR}` placeholders resolved from the environment (see below) |
+| `baseUrl` | yes | OpenAI-compatible base; `/chat/completions` and `/embeddings` are appended. May contain `${VAR}` placeholders resolved from the environment (see below) |
 | `model` | yes | Default model id sent to the API |
+| `embedModel` | no | Default model id for `/v1/embeddings` (the chat `model` usually can't embed). Without it, embedding calls fall back to `model` |
 | `keyEnv` | yes | Name of the env var the key is read from (never put the key in YAML) |
 
 `baseUrl` supports `${VAR}` substitution from the environment — handy when the
@@ -203,6 +204,52 @@ Notes:
   (standard OpenAI behaviour); `newChat` is a no-op.
 - Add any other OpenAI-compatible service by copying the block and pointing
   `baseUrl`/`keyEnv` at it.
+
+### Images (vision)
+
+API providers forward the request `messages` to the upstream API unchanged, so
+OpenAI-style multimodal content works out of the box — send `content` as an
+array of parts and use a vision-capable model:
+
+```bash
+curl http://localhost:9777/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "digitalocean/llama-4-maverick",
+    "messages": [{"role":"user","content":[
+      {"type":"text","text":"What is in this image?"},
+      {"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KG..."}}
+    ]}]
+  }'
+```
+
+Both a `data:` URL (inline base64) and an `https://` URL work — for a remote URL
+the *upstream* API fetches it, so it must be publicly reachable. Vision-capable
+DigitalOcean models include `llama-4-maverick` and the commercial `openai-gpt-4o`
+/ `anthropic-claude-*` models; text-only models (e.g. `llama3.3-70b-instruct`)
+will error on image content. Browser providers do **not** accept image content.
+
+### Embeddings
+
+API providers also expose `POST /v1/embeddings` (OpenAI-compatible). The `model`
+field selects the provider; add `/model` to pick the embedding model, or rely on
+the provider's `embedModel` default. `input` is a string or array of strings.
+
+```bash
+# default embedding model (digitalocean -> gte-large-en-v1.5)
+curl http://localhost:9777/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"digitalocean","input":"hello world"}'
+
+# pick the model + batch several inputs
+curl http://localhost:9777/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"digitalocean/bge-m3","input":["first text","second text"]}'
+```
+
+The response is the upstream OpenAI-shaped `{ object, data: [{embedding, index}], usage }`.
+Only API-key providers support embeddings — calling it on a browser provider
+returns `400`.
 
 The bundled `providers.yaml` ships these API-key providers as examples. Create a
 key on the provider's console, then put it in your `.env` under the listed env

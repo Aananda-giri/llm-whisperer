@@ -189,6 +189,17 @@ print(resp.choices[0].message.content)
 
 **Pick a specific model** with `provider/model`, e.g. `"model": "openai/gpt-4o"`.
 
+**Images (vision)** — API-key providers accept OpenAI-style multimodal
+`content` arrays; just use a vision-capable model (e.g. `digitalocean/llama-4-maverick`).
+
+**Embeddings** — API-key providers also serve `POST /v1/embeddings`:
+
+```bash
+curl http://localhost:9777/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"digitalocean","input":"hello world"}'
+```
+
 **Protect the API (optional)** — set `WSPR_API_KEY=your-secret` and callers must
 send it as `Authorization: Bearer your-secret`. Handy if you expose it on a
 network.
