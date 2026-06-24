@@ -276,3 +276,14 @@ providers:
       baseUrl: "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1"
       model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
       keyEnv: "CLOUDFLARE_API_TOKEN"
+
+  # DigitalOcean Serverless Inference (GradientAI Platform) — one endpoint, many
+  # models (Llama, DeepSeek, Qwen, Mistral, plus commercial OpenAI/Anthropic).
+  # Create a "model access key" in the control panel under Inference → Manage →
+  # Model Access Keys. Switch models per request, e.g. "digitalocean/deepseek-r1-distill-llama-70b".
+  digitalocean:
+    api:
+      baseUrl: "https://inference.do-ai.run/v1"
+      model: "llama3.3-70b-instruct"
+      embedModel: "gte-large-en-v1.5"   # used by /v1/embeddings (also: bge-m3)
+      keyEnv: "DIGITALOCEAN_INFERENCE_KEY"

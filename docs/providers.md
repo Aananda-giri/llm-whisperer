@@ -216,6 +216,7 @@ var. Most consoles show the key **only once** — copy it immediately.
 | `cerebras` | <https://cloud.cerebras.ai> → **API Keys** | ✅ free tier |
 | `mistral` | <https://admin.mistral.ai/organization/api-keys> | ✅ free, no card |
 | `cloudflare` | see [Getting Cloudflare credentials](#getting-cloudflare-credentials-cloudflare_api_token--cloudflare_account_id) above | ✅ free allowance (needs token **+** account id) |
+| `digitalocean` | <https://cloud.digitalocean.com> → **Inference → Manage → Model Access Keys** | paid (pay-per-token) |
 | `openai` | <https://platform.openai.com/api-keys> | paid |
 | `deepseek-api` | <https://platform.deepseek.com/api_keys> | paid (low cost) |
 
