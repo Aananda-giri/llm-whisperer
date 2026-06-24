@@ -1,6 +1,6 @@
 {
   "name": "llm-whisperer",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": false,
   "type": "module",
   "description": "Whisper to free web LLM chat UIs (Qwen, ChatGPT, Claude, DeepSeek, GLM) and expose them over one local HTTP API — no API keys needed.",
