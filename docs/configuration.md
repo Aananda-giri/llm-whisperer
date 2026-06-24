@@ -14,7 +14,7 @@ in the shell.
 | `PROVIDERS_FILE` | *(see below)* | Path to a custom `providers.yaml` |
 | `CDP_URL` | *(unset)* | Connect to an existing Chrome via CDP instead of launching one |
 | `WSPR_API_KEY` | *(unset)* | If set, require this key on all endpoints except `/health` |
-| `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY`, `CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`), … | *(unset)* | Keys for [API-key providers](#provider-api-keys). The name is set per provider via `keyEnv` in `providers.yaml`; `baseUrl` may also reference `${VAR}` for things like an account id |
+| `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY`, `CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`), `DIGITALOCEAN_INFERENCE_KEY`, … | *(unset)* | Keys for [API-key providers](#provider-api-keys). The name is set per provider via `keyEnv` in `providers.yaml`; `baseUrl` may also reference `${VAR}` for things like an account id |
 
 ### PORT
 
@@ -131,12 +131,12 @@ authentication is disabled (no-op).
 ### Provider API keys
 
 Providers that declare an `api:` block in `providers.yaml` (e.g. `openai`,
-`deepseek-api`) call a real OpenAI-compatible HTTP API instead of driving a
+`digitalocean`) call a real OpenAI-compatible HTTP API instead of driving a
 browser. Each reads its key from the environment variable named by its `keyEnv`
 field — keys are **never** stored in the YAML:
 
 ```bash
-OPENAI_API_KEY=sk-...   DEEPSEEK_API_KEY=sk-...   GEMINI_API_KEY=...   wspr serve
+OPENAI_API_KEY=sk-...   GROQ_API_KEY=...   GEMINI_API_KEY=...   wspr serve
 ```
 
 If the key is unset, requests to that provider return `401` with a message

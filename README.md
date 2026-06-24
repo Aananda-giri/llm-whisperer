@@ -80,7 +80,6 @@ Set the env var, then use the **provider name as the model**.
 | Cloudflare Workers AI | `cloudflare` | ✅ free allowance | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` |
 | DigitalOcean Inference | `digitalocean` | 💲 paid (pay-per-token) | `DIGITALOCEAN_INFERENCE_KEY` |
 | OpenAI | `openai` | 💲 paid | `OPENAI_API_KEY` |
-| DeepSeek | `deepseek-api` | 💲 paid | `DEEPSEEK_API_KEY` |
 
 You can also add any other OpenAI-compatible service yourself — see
 [providers.md](./docs/providers.md#api-key-providers).
@@ -150,7 +149,6 @@ sites show the key **only once**, so copy it right away.
 | Cloudflare | <https://dash.cloudflare.com> → **AI → AI Gateway → Create Authentication Token** (your account id is shown in the sample `curl` on that page) |
 | DigitalOcean | <https://cloud.digitalocean.com> → **Inference → Manage → Model Access Keys** |
 | OpenAI | <https://platform.openai.com/api-keys> |
-| DeepSeek | <https://platform.deepseek.com/api_keys> |
 
 Your `.env` file can hold as many keys as you like:
 

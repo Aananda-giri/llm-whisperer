@@ -68,7 +68,7 @@ then sends all messages flattened into one prompt. Use this to switch topics
 or reset context.
 
 > **API-key providers are different.** Providers with an `api:` block (e.g.
-> `openai`, `deepseek-api`) call a stateless HTTP API — there is no server-side
+> `openai`, `digitalocean`) call a stateless HTTP API — there is no server-side
 > conversation, so send the **full** `messages` history with every request
 > (standard OpenAI behaviour). `newChat` has no effect on them. See
 > [providers.md](./providers.md#api-key-providers).

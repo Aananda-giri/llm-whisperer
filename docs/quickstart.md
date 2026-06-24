@@ -33,7 +33,7 @@ hand. You can use both at once.
 ### Path A — API key (fastest, no browser)
 
 Several supported providers have **free tiers**: `gemini`, `groq`, `openrouter`,
-`cerebras`, `mistral` (also `openai`, `deepseek-api` if you pay). Set the key and
+`cerebras`, `mistral` (also `openai`, `digitalocean` if you pay). Set the key and
 go — you can skip the `playwright install` step above entirely.
 
 ```bash

@@ -198,7 +198,7 @@ Notes:
 - Set the key via the environment (e.g. a `.env` file). If it's missing, calls to
   that provider return `401` naming the variable.
 - Switch models per request with the `provider/model` form, e.g.
-  `{"model":"openai/gpt-4o"}` or `{"model":"deepseek-api/deepseek-reasoner"}`.
+  `{"model":"openai/gpt-4o"}` or `{"model":"digitalocean/deepseek-r1-distill-llama-70b"}`.
 - API providers are **stateless** — unlike the browser ones, there is no
   server-side conversation. Send the full message history with each request
   (standard OpenAI behaviour); `newChat` is a no-op.
@@ -265,7 +265,6 @@ var. Most consoles show the key **only once** — copy it immediately.
 | `cloudflare` | see [Getting Cloudflare credentials](#getting-cloudflare-credentials-cloudflare_api_token--cloudflare_account_id) above | ✅ free allowance (needs token **+** account id) |
 | `digitalocean` | <https://cloud.digitalocean.com> → **Inference → Manage → Model Access Keys** | paid (pay-per-token) |
 | `openai` | <https://platform.openai.com/api-keys> | paid |
-| `deepseek-api` | <https://platform.deepseek.com/api_keys> | paid (low cost) |
 
 Free quotas, model names, and rate limits change often — check each provider's
 docs for current limits.

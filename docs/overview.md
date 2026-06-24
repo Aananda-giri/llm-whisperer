@@ -87,17 +87,17 @@ OpenAI-compatible HTTP API and ship in `providers.yaml`:
 | Provider key | Endpoint | Default model | Key env var |
 |---|---|---|---|
 | `openai` | api.openai.com | `gpt-4o-mini` | `OPENAI_API_KEY` |
-| `deepseek-api` | api.deepseek.com | `deepseek-chat` | `DEEPSEEK_API_KEY` |
 | `gemini` | generativelanguage.googleapis.com | `gemini-2.5-flash` | `GEMINI_API_KEY` |
 | `groq` | api.groq.com | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
 | `openrouter` | openrouter.ai | `openai/gpt-oss-120b:free` | `OPENROUTER_API_KEY` |
 | `cerebras` | api.cerebras.ai | `gpt-oss-120b` | `CEREBRAS_API_KEY` |
 | `mistral` | api.mistral.ai | `mistral-small-latest` | `MISTRAL_API_KEY` |
 | `cloudflare` | api.cloudflare.com | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` |
+| `digitalocean` | inference.do-ai.run | `llama3.3-70b-instruct` | `DIGITALOCEAN_INFERENCE_KEY` |
 
 > `gemini`, `groq`, `openrouter`, `cerebras`, `mistral`, and `cloudflare` all
 > have **free tiers** (OpenRouter's `:free` models need no credits at all);
-> `openai` and `deepseek-api` are paid. Free quotas, models, and rate limits
+> `openai` and `digitalocean` are paid. Free quotas, models, and rate limits
 > change often — check each provider's docs for current limits.
 >
 > **Where to get each key** (and the exact Cloudflare steps) is in
@@ -105,7 +105,7 @@ OpenAI-compatible HTTP API and ship in `providers.yaml`:
 > needs your account id in `CLOUDFLARE_ACCOUNT_ID` (it goes into the request URL).
 
 Set the matching env var (e.g. in `.env`), then use the provider like any other —
-`{"model":"openai"}` or `{"model":"deepseek-api/deepseek-reasoner"}` to pick a
+`{"model":"openai"}` or `{"model":"digitalocean/deepseek-r1-distill-llama-70b"}` to pick a
 model. Add any other OpenAI-compatible service (Groq, Together, …) by copying the
 `api:` block. Keys are read from the environment, never stored in the YAML. See
 [providers.md](./providers.md#api-key-providers).
