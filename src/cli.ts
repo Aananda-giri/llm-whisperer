@@ -1,30 +1,41 @@
 #!/usr/bin/env node
 import "dotenv/config";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { loadConfig } from "./config.js";
-import { BrowserManager } from "./browser.js";
+import { DEFAULT_BROWSER_PROFILE, validateBrowserProfile, BrowserManager } from "./browser.js";
 import { SessionPool } from "./session-pool.js";
 import { createServer } from "./server.js";
 
+/** Sentinel file marking a provider×profile session as saved. */
+function sentinelPath(profilesDir: string, provider: string, profile: string): string {
+  const dir = join(profilesDir, provider);
+  // Legacy layout: the default profile keeps the old `.logged-in` name.
+  return join(dir, profile === DEFAULT_BROWSER_PROFILE ? ".logged-in" : `${profile}.logged-in`);
+}
+
 async function main() {
-  const [command, arg] = process.argv.slice(2);
+  const [command, arg, arg2] = process.argv.slice(2);
 
   const isHelp = command === "--help" || command === "-h";
   if (!command || isHelp) {
     console.log(`🤫 llm-whisperer — one quiet API for every LLM
 
 Usage:
-  wspr serve            Start the local API on PORT (default 9777)
-  wspr login <name>     Open a browser tab to log in; session is saved
-  wspr list             List configured providers
+  wspr serve                  Start the local API on PORT (default 9777)
+  wspr login <name> [profile] Open a browser tab to log in; session is saved
+                              under the given browser profile (default "${DEFAULT_BROWSER_PROFILE}")
+  wspr list                   List configured providers
 
 Environment:
-  PORT           API port (default 9777)
-  HEADLESS       true/false — hide the browser (default false)
-  BROWSER        browser channel: chromium (default), chrome, msedge, …
-  PROFILES_DIR   where to store login sessions (default ~/.config/llm-whisperer/profiles)
-  PROVIDERS_FILE path to a custom providers.yaml`);
+  PORT                 API port (default 9777)
+  HEADLESS             true/false — hide the browser (default false)
+  BROWSER              browser channel: chromium (default), chrome, msedge, …
+  WSPR_WARM            true/false — pre-open browser tabs at startup (default false;
+                       otherwise they launch lazily on the first browser request)
+  WSPR_BROWSER_PROFILE default browser profile for logins and requests (default "${DEFAULT_BROWSER_PROFILE}")
+  PROFILES_DIR         where to store login sessions (default ~/.config/llm-whisperer/profiles)
+  PROVIDERS_FILE       path to a custom providers.yaml`);
     process.exit(isHelp ? 0 : 1);
   }
 
@@ -34,7 +45,7 @@ Environment:
     case "serve":
       return serve(config);
     case "login":
-      return login(config, arg);
+      return login(config, arg, arg2);
     case "list":
       console.log("Providers:", Object.keys(config.providers).join(", "));
       return;
@@ -67,7 +78,7 @@ async function serve(config: ReturnType<typeof loadConfig>) {
   const server = app.listen(config.port, () => {
     console.log(`listening on http://localhost:${config.port}`);
     console.log(`Providers: ${Object.keys(config.providers).join(", ")}`);
-    console.log(`Profiles:  ${config.profilesDir}`);
+    console.log(`Profiles:  ${config.profilesDir} (default browser profile "${config.browserProfile}")`);
   });
 
   const shutdown = async () => {
@@ -79,7 +90,13 @@ async function serve(config: ReturnType<typeof loadConfig>) {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  await warmProviders(config, pool);
+  if (config.warmTabs) {
+    await warmProviders(config, pool);
+  } else {
+    console.log(
+      "Browser tabs launch on first use (set WSPR_WARM=true to pre-open them at startup).",
+    );
+  }
 }
 
 async function warmProviders(
@@ -89,8 +106,10 @@ async function warmProviders(
   const names = Object.keys(config.providers).filter((name) => {
     const cfg = config.providers[name];
     if (cfg.api) return false; // API providers have no browser tab to warm
+    // Only warm the default profile; named profiles launch lazily.
+    if (cfg.profile !== DEFAULT_BROWSER_PROFILE) return false;
     if (!cfg.requiresLogin) return true;
-    return existsSync(join(config.profilesDir, name, ".logged-in"));
+    return existsSync(sentinelPath(config.profilesDir, name, DEFAULT_BROWSER_PROFILE));
   });
 
   if (names.length === 0) {
@@ -102,9 +121,9 @@ async function warmProviders(
   for (const name of names) {
     const cfg = config.providers[name];
     try {
-      const page = await pool.acquire(name);
+      const page = await pool.acquire(name, DEFAULT_BROWSER_PROFILE);
       await page.goto(cfg.url, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-      pool.release(name, page);
+      pool.release(name, DEFAULT_BROWSER_PROFILE, page);
       console.log(`  ✓ ${name} ready`);
     } catch (e) {
       console.warn(`  ✗ ${name} failed to warm: ${(e as Error).message}`);
@@ -112,23 +131,38 @@ async function warmProviders(
   }
 }
 
-async function login(config: ReturnType<typeof loadConfig>, name?: string) {
+async function login(
+  config: ReturnType<typeof loadConfig>,
+  name?: string,
+  profileName?: string,
+) {
   if (!name || !config.providers[name]) {
     console.error(`Specify a provider: ${Object.keys(config.providers).join(", ")}`);
     process.exit(1);
   }
   const provider = config.providers[name];
 
-  // All providers share one browser profile. Chrome locks the profile while
-  // running, so "wspr serve" must be stopped before running login.
+  if (provider.api) {
+    console.error(
+      `"${name}" is an API-key provider — set ${provider.api.keyEnv}=... in .env instead of logging in.`,
+    );
+    process.exit(1);
+  }
+
+  // Request arg wins; otherwise the provider's configured profile (which already
+  // includes the WSPR_BROWSER_PROFILE default).
+  const profile = validateBrowserProfile(profileName ?? provider.profile ?? config.browserProfile);
+
+  // Each profile is a separate Chrome user-data directory, locked while running,
+  // so "wspr serve" must be stopped before running login for that profile.
   const browser = new BrowserManager(config.profilesDir, false, config.browserChannel);
   let ctx: Awaited<ReturnType<typeof browser.context>>;
   try {
-    ctx = await browser.context({ headless: false });
+    ctx = await browser.context(profile, { headless: false });
   } catch (e) {
     console.error(
       `Could not open the browser. If "wspr serve" is running, stop it first —` +
-        ` Chrome locks the profile to one process at a time.`,
+        ` Chrome locks each profile to one process at a time.`,
     );
     console.error((e as Error).message);
     process.exit(1);
@@ -137,7 +171,7 @@ async function login(config: ReturnType<typeof loadConfig>, name?: string) {
   const page = await ctx.newPage();
   await page.goto(provider.url, { waitUntil: "domcontentloaded" });
 
-  console.log(`\nA browser tab opened at ${provider.url}`);
+  console.log(`\nA browser tab opened at ${provider.url} (profile "${profile}")`);
   console.log("Log in, get to the chat screen, then press Enter to save the session.");
 
   await new Promise<void>((res) => {
@@ -147,10 +181,12 @@ async function login(config: ReturnType<typeof loadConfig>, name?: string) {
 
   await browser.close();
 
-  const sentinelDir = join(config.profilesDir, name);
-  mkdirSync(sentinelDir, { recursive: true });
-  writeFileSync(join(sentinelDir, ".logged-in"), new Date().toISOString());
-  console.log(`Session saved for "${name}". Start "wspr serve" to use it.`);
+  const sentinelFile = sentinelPath(config.profilesDir, name, profile);
+  mkdirSync(dirname(sentinelFile), { recursive: true });
+  writeFileSync(sentinelFile, new Date().toISOString());
+  console.log(
+    `Session saved for "${name}" in profile "${profile}". Start "wspr serve" to use it.`,
+  );
   process.exit(0);
 }
 
