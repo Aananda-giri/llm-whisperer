@@ -13,11 +13,22 @@ const LAUNCH_ARGS = [
   "--no-first-run",
 ];
 
+export const DEFAULT_BROWSER_PROFILE = "default";
+
+/** Keep profile names safe to use as a directory name. */
+export function validateBrowserProfile(profile: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(profile)) {
+    throw new Error(
+      `Invalid browser profile "${profile}". Use 1-64 letters, numbers, dots, underscores, or hyphens.`,
+    );
+  }
+  return profile;
+}
+
 /**
- * Single shared browser window; each provider gets a tab (Page) inside it.
- * All providers' sessions are stored together in `profilesDir/browser/` —
- * Chrome partitions cookies by origin, so qwen.ai, deepseek.com, etc. never
- * bleed into each other.
+ * One persistent browser context per named profile. Providers sharing a profile
+ * get tabs in the same browser; separate profiles have isolated cookies and
+ * local storage. The legacy `browser/` directory remains the `default` profile.
  *
  * Two modes (controlled by CDP_URL env var):
  *
@@ -31,7 +42,7 @@ const LAUNCH_ARGS = [
  *              default context; no persistent profile needed.
  */
 export class BrowserManager {
-  private sharedContext: Promise<BrowserContext> | null = null;
+  private contexts = new Map<string, Promise<BrowserContext>>();
 
   constructor(
     private profilesDir: string,
@@ -41,15 +52,19 @@ export class BrowserManager {
     private cdpUrl: string | null = process.env.CDP_URL ?? null,
   ) {}
 
-  context(opts?: { headless?: boolean }): Promise<BrowserContext> {
+  context(profile: string = DEFAULT_BROWSER_PROFILE, opts?: { headless?: boolean }): Promise<BrowserContext> {
+    validateBrowserProfile(profile);
     if (this.cdpUrl) {
-      if (!this.sharedContext) this.sharedContext = this.cdpContext();
-      return this.sharedContext;
+      if (profile !== DEFAULT_BROWSER_PROFILE) {
+        throw new Error("Named browser profiles are unavailable when CDP_URL is set. Start a separate wspr server for each CDP browser.");
+      }
+      const context = this.contexts.get(profile) ?? this.cdpContext();
+      this.contexts.set(profile, context);
+      return context;
     }
-    if (!this.sharedContext) {
-      this.sharedContext = this.profileContext(opts?.headless ?? this.headless);
-    }
-    return this.sharedContext;
+    const context = this.contexts.get(profile) ?? this.profileContext(profile, opts?.headless ?? this.headless);
+    this.contexts.set(profile, context);
+    return context;
   }
 
   private async cdpContext(): Promise<BrowserContext> {
@@ -58,12 +73,15 @@ export class BrowserManager {
     return browser.contexts()[0] ?? browser.newContext({ viewport: { width: 1280, height: 900 } });
   }
 
-  private profileContext(headless: boolean): Promise<BrowserContext> {
-    const userDataDir = resolve(join(this.profilesDir, "browser"));
+  private profileContext(profile: string, headless: boolean): Promise<BrowserContext> {
+    // Preserve existing installations: their shared browser directory is the default profile.
+    const userDataDir = resolve(join(
+      this.profilesDir,
+      profile === DEFAULT_BROWSER_PROFILE ? "browser" : "browser-profiles",
+      ...(profile === DEFAULT_BROWSER_PROFILE ? [] : [profile]),
+    ));
     mkdirSync(userDataDir, { recursive: true });
-    if (this.channel) {
-      console.log(`[browser] Launching ${this.channel} with profile ${userDataDir}`);
-    }
+    console.log(`[browser] Launching ${this.channel ?? "Chromium"} with profile "${profile}" at ${userDataDir}`);
     return stealthChromium.launchPersistentContext(userDataDir, {
       channel: this.channel,
       headless,
@@ -75,9 +93,8 @@ export class BrowserManager {
   }
 
   async close(): Promise<void> {
-    if (this.sharedContext) {
-      await (await this.sharedContext).close().catch(() => {});
-      this.sharedContext = null;
-    }
+    const contexts = [...this.contexts.values()];
+    this.contexts.clear();
+    await Promise.all(contexts.map(async (context) => (await context).close().catch(() => {})));
   }
 }

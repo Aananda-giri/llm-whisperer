@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
+import { DEFAULT_BROWSER_PROFILE, validateBrowserProfile } from "./browser.js";
 
 // Directory of the compiled file (dist/) — used to find bundled providers.yaml.
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,6 +44,12 @@ export interface ProviderConfig {
   modelPickerTrigger?: string;
   /** Map of model name → selector to click inside the picker. */
   models?: Record<string, string>;
+  /**
+   * Default browser profile for this provider (e.g. "email1"). Omitted ⇒ the
+   * server default (WSPR_BROWSER_PROFILE env var, itself defaulting to
+   * "default"). A request-level `profile` field always wins.
+   */
+  profile?: string;
   /** Present ⇒ this is an API-key provider, not a browser one. */
   api?: ApiProviderConfig;
 }
@@ -58,6 +65,15 @@ export interface AppConfig {
    * which avoids Google's "this browser may not be secure" login block.
    */
   browserChannel?: string;
+  /** Used when a request does not specify its own `profile`. */
+  browserProfile: string;
+  /**
+   * Pre-open ("warm") a browser tab for every logged-in browser provider at
+   * startup. Off by default so `wspr serve` stays headless for API-only use —
+   * the browser launches lazily on the first browser-provider request instead.
+   * Set WSPR_WARM=true to restore eager warming (slightly faster first hit).
+   */
+  warmTabs: boolean;
   providers: Record<string, ProviderConfig>;
 }
 
@@ -93,6 +109,13 @@ export function loadConfig(file?: string): AppConfig {
     throw new Error(`No "providers" map found in ${configFile}`);
   }
 
+  // Effective default profile for browser providers that don't declare one.
+  // Materialized into every browser provider below so the fallback chain
+  // (request `profile` → provider `profile` → this → "default") resolves once.
+  const defaultBrowserProfile = validateBrowserProfile(
+    process.env.WSPR_BROWSER_PROFILE?.trim() || DEFAULT_BROWSER_PROFILE,
+  );
+
   const providers: Record<string, ProviderConfig> = {};
   for (const [name, cfg] of Object.entries(raw.providers)) {
     if (cfg?.api) {
@@ -107,6 +130,11 @@ export function loadConfig(file?: string): AppConfig {
         if (!cfg?.[field]) {
           throw new Error(`Provider "${name}" is missing required field "${field}"`);
         }
+      }
+      try {
+        cfg.profile = validateBrowserProfile(cfg.profile ?? defaultBrowserProfile);
+      } catch (e) {
+        throw new Error(`Provider "${name}": ${(e as Error).message}`);
       }
     }
     providers[name] = {
@@ -133,6 +161,8 @@ export function loadConfig(file?: string): AppConfig {
     browserChannel: ((c) => (c && c.toLowerCase() !== "chromium" ? c : undefined))(
       process.env.BROWSER?.trim(),
     ),
+    browserProfile: defaultBrowserProfile,
+    warmTabs: (process.env.WSPR_WARM ?? "false").toLowerCase() === "true",
     providers,
   };
 }
