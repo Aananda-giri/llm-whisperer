@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import type { ProviderConfig } from "../config.js";
 import type { SessionPool } from "../session-pool.js";
+import { DEFAULT_BROWSER_PROFILE, validateBrowserProfile } from "../browser.js";
 
 export interface Message {
   role: "user" | "assistant" | "system";
@@ -8,6 +9,8 @@ export interface Message {
 }
 
 export interface ChatOptions {
+  /** Named persistent browser profile to use. */
+  profile?: string;
   /**
    * Start a fresh conversation before sending.
    * Default: false — continues the existing conversation so the web UI
@@ -101,7 +104,10 @@ export class WebLLMProvider extends BaseProvider {
    * then releases the page.
    */
   async *stream(messages: Message[], options: ChatOptions = {}): AsyncGenerator<string> {
-    const page = await this.pool.acquire(this.name);
+    const profile = validateBrowserProfile(
+      options.profile ?? this.config.profile ?? DEFAULT_BROWSER_PROFILE,
+    );
+    const page = await this.pool.acquire(this.name, profile);
     try {
       await this.ensureOnPage(page);
       await this.ensureLoggedIn(page);
@@ -122,7 +128,7 @@ export class WebLLMProvider extends BaseProvider {
       await this.submitPrompt(page, prompt);
       yield* this.streamAnswer(page, before);
     } finally {
-      this.pool.release(this.name, page);
+      this.pool.release(this.name, profile, page);
     }
   }
 
@@ -272,7 +278,7 @@ export class WebLLMProvider extends BaseProvider {
 export class LoginRequiredError extends Error {
   constructor(public provider: string) {
     super(
-      `Not logged in to "${provider}". Run: wspr login ${provider}` +
+      `Not logged in to "${provider}". Run: wspr login ${provider} [profile]` +
         `  (opens a visible browser; log in, then press Enter to save the session)`,
     );
     this.name = "LoginRequiredError";
