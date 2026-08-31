@@ -67,7 +67,9 @@ A Chromium window opens at `chat.qwen.ai`. Log in (Google OAuth works), get to
 the chat screen, then press **Enter** in your terminal. The session is saved.
 
 > **Note:** You must stop `wspr serve` before running `wspr login` — Chrome
-> locks the browser profile to one process at a time.
+> locks each browser profile to one process at a time. To keep several
+> accounts, log in under a named profile instead: `wspr login qwen email1`.
+> See [Browser profiles](./configuration.md#browser-profiles).
 
 Then start the server and send a message:
 

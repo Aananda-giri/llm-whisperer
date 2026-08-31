@@ -10,6 +10,8 @@ in the shell.
 | `PORT` | `9777` | Port the HTTP API listens on (see note) |
 | `HEADLESS` | `false` | `true` to hide the browser window |
 | `BROWSER` | `chromium` | Browser channel for profile mode: `chromium`, `chrome`, `msedge`, … |
+| `WSPR_WARM` | `false` | `true` to pre-open browser tabs at startup; otherwise they launch lazily on the first browser-provider request |
+| `WSPR_BROWSER_PROFILE` | `default` | Default browser profile for logins and requests that don't name one |
 | `PROFILES_DIR` | `~/.config/llm-whisperer/profiles` | Where sessions and sentinel files are stored |
 | `PROVIDERS_FILE` | *(see below)* | Path to a custom `providers.yaml` |
 | `CDP_URL` | *(unset)* | Connect to an existing Chrome via CDP instead of launching one |
@@ -54,15 +56,80 @@ machine.
 This setting only applies to profile mode. In **CDP mode** (`CDP_URL` set) the
 browser is whichever one you started yourself, so `BROWSER` is ignored.
 
+### WSPR_WARM
+
+By default `wspr serve` does **not** open a browser at startup — it stays a
+plain HTTP server until something actually needs a browser. The first request to
+a browser provider (`qwen`, `chatgpt`, `claude`, …) launches the browser lazily;
+API-key providers (`groq`, `gemini`, `openai`, …) never trigger one at all.
+
+```bash
+wspr serve                  # no browser until a browser provider is hit
+WSPR_WARM=true wspr serve   # pre-open a tab per logged-in provider at startup
+```
+
+Set `WSPR_WARM=true` to restore eager "warming" — a tab is pre-opened for every
+logged-in browser provider so the first request to each is slightly faster. This
+is mainly useful when you primarily use the browser providers; for API-only use,
+leave it off so the server runs headless.
+
+### Browser profiles
+
+A **browser profile** is a separate Chromium user-data directory: its own
+cookies, logins, and local storage. The `default` profile is the one used
+unless something says otherwise. Named profiles let you keep several accounts
+per site — e.g. `email1` logged in to DeepSeek, ChatGPT, and Claude, and
+`email2` logged in to a different set.
+
+A profile is chosen by the first of these that applies:
+
+1. The `profile` field on the API request (`/chat`, `/v1/chat/completions`, `/v1/messages`)
+2. The provider's `profile:` field in `providers.yaml`
+3. `WSPR_BROWSER_PROFILE` (default `default`)
+
+```bash
+# Log a provider in under a named profile (stop wspr serve first):
+wspr login deepseek email1
+wspr login deepseek email2
+
+# Prefer a profile for every provider and login that doesn't name one:
+WSPR_BROWSER_PROFILE=email1 wspr serve
+```
+
+```yaml
+# providers.yaml — pin a provider to a profile:
+qwen:
+  # ...
+  profile: "email1"
+```
+
+```bash
+# API requests can override per call:
+curl http://localhost:9777/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek","profile":"email2","messages":[{"role":"user","content":"Hi"}]}'
+```
+
+Profile names must be 1–64 characters of letters, numbers, dots, underscores,
+or hyphens. Requests without a `profile` field keep working exactly as before.
+
+`WSPR_WARM=true` warms only the `default` profile; named profiles launch
+lazily on their first request. Named profiles are unavailable in **CDP mode** —
+start a separate `wspr serve` per CDP browser instead.
+
 ### PROFILES_DIR
 
-Holds two things:
+Holds the browser data and one sentinel per logged-in provider×profile:
 
 ```
 $PROFILES_DIR/
-  browser/               ← Chromium user data (cookies, storage, etc.)
+  browser/                       ← Chromium user data for the "default" profile
+  browser-profiles/              ← one Chromium user-data dir per named profile
+    email1/
+    email2/
   <provider>/
-    .logged-in           ← sentinel: this provider has a saved session
+    .logged-in                   ← sentinel: default profile has a saved session
+    email1.logged-in             ← sentinel: named profile has a saved session
 ```
 
 Override it if you want sessions stored elsewhere:
@@ -99,6 +166,10 @@ CDP_URL=http://localhost:9222 wspr serve
 ```
 
 A helper script is included in the repo: `pnpm run chrome`.
+
+Named browser profiles are not available in CDP mode — the running browser
+already has one profile. To switch accounts, start a second Chrome with a
+different `--user-data-dir` and point a second `wspr serve` at it.
 
 ### WSPR_API_KEY
 

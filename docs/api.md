@@ -10,6 +10,8 @@ It offers two interfaces:
   so existing OpenAI clients (Cursor, Open WebUI, Continue.dev, LangChain, the
   `openai` SDK) work by just pointing the base URL here.
 - **`POST /v1/embeddings`** — OpenAI-compatible embeddings (API-key providers only).
+- **`POST /v1/messages`** — Anthropic-compatible (Messages API), including
+  streaming, so the `anthropic` SDK works by pointing its base URL here.
 
 ## Authentication
 
@@ -49,6 +51,7 @@ Send a message to a provider and get the response.
 | `messages` | Message[] | yes | Conversation turns. See below. |
 | `newChat` | boolean | no | `true` to start a fresh conversation first. Default: `false`. |
 | `model` | string | no | `provider/model-name` to switch the model in the web UI before sending (e.g. `qwen/qwen2.5-max`). See [Model selection](#model-selection). |
+| `profile` | string | no | Browser profile to use for this request (e.g. `email1`). Default: the provider's `profile` in `providers.yaml`, else `WSPR_BROWSER_PROFILE`, else `default`. Ignored by API-key providers. |
 
 **Message object**
 
@@ -136,6 +139,7 @@ OpenAI-compatible chat completions. Point any OpenAI client at
 | `messages` | Message[] | yes | Standard OpenAI messages array |
 | `stream` | boolean | no | `true` for Server-Sent Events streaming. Default: `false`. |
 | `newChat` | boolean | no | `true` to start a fresh conversation first |
+| `profile` | string | no | Browser profile to use for this request (e.g. `email1`). Default: the provider's `profile` in `providers.yaml`, else `WSPR_BROWSER_PROFILE`, else `default`. Ignored by API-key providers. |
 
 **Images (vision):** for API-key providers, `content` may be an OpenAI-style
 array of parts (`{"type":"text",...}` + `{"type":"image_url","image_url":{"url":...}}`).
@@ -284,6 +288,100 @@ The upstream OpenAI-shaped response is passed through (one entry per input):
   "usage": { "prompt_tokens": 4, "total_tokens": 4 }
 }
 ```
+
+---
+
+## POST /v1/messages
+
+Anthropic-compatible [Messages API](https://docs.anthropic.com/en/api/messages).
+Point the `anthropic` SDK (or any tool that targets it) at
+`http://localhost:9777` and the model selection rules are the same as every
+other endpoint: `model` is the **provider key**, or `provider/model-name` to
+also switch the model.
+
+When `WSPR_API_KEY` is set, the SDK's `x-api-key` header is checked against it;
+otherwise the endpoint is open and the key can be anything.
+
+### Request
+
+```json
+{
+  "model": "groq",
+  "max_tokens": 1024,
+  "system": "You are concise.",
+  "messages": [{ "role": "user", "content": "Hello!" }],
+  "stream": false
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `model` | string | yes | Provider key, or `provider/model-name` to also switch model |
+| `messages` | Message[] | yes | Anthropic messages array (`user` / `assistant`) |
+| `system` | string \| block[] | no | System prompt. Sent to the provider as a `system` message. |
+| `max_tokens` | number | no | Accepted for SDK compatibility; not enforced by the proxy |
+| `stream` | boolean | no | `true` for Anthropic-style SSE streaming. Default: `false`. |
+| `newChat` | boolean | no | `true` to start a fresh conversation first (browser providers) |
+| `profile` | string | no | Browser profile to use for this request (e.g. `email1`). Default: the provider's `profile` in `providers.yaml`, else `WSPR_BROWSER_PROFILE`, else `default`. Ignored by API-key providers. |
+
+Message `content` may be a string or an array of content blocks. Text blocks
+are concatenated; non-text blocks (e.g. images) are ignored — browser providers
+are text-only. For vision, use the OpenAI endpoint instead.
+
+### Response (non-streaming)
+
+```json
+{
+  "id": "msg_1718900000000",
+  "type": "message",
+  "role": "assistant",
+  "model": "groq",
+  "content": [{ "type": "text", "text": "Hi!" }],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": { "input_tokens": 0, "output_tokens": 0 }
+}
+```
+
+> Token counts are always `0` — these are proxied/browser sessions, so there is
+> no real token accounting.
+
+### Streaming (`stream: true`)
+
+Returns `text/event-stream` using the Anthropic event sequence:
+`message_start` → `content_block_start` → one or more `content_block_delta`
+(`text_delta`) → `content_block_stop` → `message_delta` → `message_stop`.
+
+```bash
+curl -N http://localhost:9777/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"groq","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"Count to 5"}]}'
+```
+
+### Using the Anthropic SDK
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(base_url="http://localhost:9777", api_key="not-needed")
+
+msg = client.messages.create(
+    model="groq",                       # or "groq/llama-3.1-8b-instant"
+    max_tokens=256,
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(msg.content[0].text)
+```
+
+### Error responses
+
+Errors use the Anthropic shape `{"type": "error", "error": {"type": ..., "message": ...}}`.
+
+| HTTP | `error.type` | Meaning |
+|---|---|---|
+| 400 | `invalid_request_error` | Unknown provider or empty `messages` |
+| 401 | `authentication_error` | Not logged in / missing API key for the provider |
+| 500 | `api_error` | Browser / timeout / upstream error |
 
 ---
 

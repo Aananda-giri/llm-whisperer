@@ -28,15 +28,16 @@ Run with `HEADLESS=false` and verify on first use.
 
 ## Logging in
 
-Each provider stores its session in a shared browser profile
-(`~/.config/llm-whisperer/profiles/browser/`). Chrome partitions cookies by
-origin, so sites never see each other's sessions.
+Sessions live in a **browser profile** — a Chromium user-data directory with its
+own cookies, so sites never see each other's sessions. Providers sharing a
+profile share one browser window; separate profiles are fully isolated, which
+lets you keep several accounts per site (e.g. `email1` for DeepSeek, ChatGPT,
+and Claude; `email2` for another set).
 
 ```bash
 # Stop serve first, then:
-wspr login qwen
-wspr login deepseek
-# etc.
+wspr login qwen                  # logs into the "default" profile
+wspr login deepseek email1       # logs into a named profile
 ```
 
 A Chromium window opens. Log in by hand (Google OAuth, email, or whatever the
@@ -44,6 +45,10 @@ site requires), get to the chat screen, press **Enter**.
 
 Sessions survive restarts. If a session expires, just run `wspr login <name>`
 again.
+
+The profile a provider uses comes from: the request's `profile` field → the
+provider's `profile:` field in `providers.yaml` → `WSPR_BROWSER_PROFILE` →
+`default`. See [Browser profiles](./configuration.md#browser-profiles).
 
 ## providers.yaml reference
 
@@ -69,6 +74,7 @@ providers:
     stopSelector: ":text('Stop')"         # visible while streaming; gone when done
     timeoutMs: 90000                      # max wait for a response (ms)
     stabilizeMs: 2000                     # text must be unchanged for this long
+    profile: "email1"                     # (optional) default browser profile
     modelPickerTrigger: ""                # (optional) click to open model dropdown
     models:                               # (optional) name → selector to click
       "model-a": "li:has-text('Model A')"

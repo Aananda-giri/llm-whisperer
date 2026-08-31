@@ -39,8 +39,12 @@ provider's terms.
 
 ## How it works
 
-- **One browser window** — all providers share a single Chromium instance; each
-  gets a separate tab. Chrome partitions cookies by origin, so sessions never mix.
+- **One browser window per profile** — providers sharing a browser profile share
+  one Chromium instance; each gets a separate tab, and Chrome partitions cookies
+  by origin, so sessions never mix.
+- **Multiple browser profiles** — keep separate accounts per site with named
+  profiles (`wspr login deepseek email1`). Choose per request with a `profile`
+  field, per provider via `providers.yaml`, or globally via `WSPR_BROWSER_PROFILE`.
 - **Config-driven selectors** — every provider is the same generic driver; only
   the CSS selectors in `providers.yaml` differ. Fix a broken provider without
   touching code.
@@ -168,14 +172,16 @@ See **[quickstart.md](./quickstart.md)** for a full walkthrough.
 | [api.md](./api.md) | HTTP API: `/chat`, OpenAI `/v1/chat/completions`, streaming, model selection, auth |
 | [providers.md](./providers.md) | Provider status, login, selector & model-switching reference |
 | [configuration.md](./configuration.md) | Env vars (`WSPR_API_KEY`, CDP mode, …), concurrency |
-| [pnpm.md](../wiki/pnpm.md) | pnpm usage and publishing notes |
+| [The Book](../wiki/README.md) | How it all works, why, and what is actually finished — incl. [pnpm & publishing](../wiki/6-operating/6.4-pnpm-and-publishing.md) |
 
 ## Caveats
 
 - UI updates break selectors — run with `HEADLESS=false` to debug, fix in `providers.yaml`
 - Aggressive use triggers rate limits or Cloudflare challenges
 - Sessions expire — run `wspr login <name>` to refresh
-- `wspr login` requires `wspr serve` to be stopped first (Chrome profile lock)
+- `wspr login` collides with `wspr serve` only when they use the same browser
+  profile (Chrome locks each profile to one process); log in under another
+  profile name while the server runs
 - This is for personal, low-volume use; respect each service's terms
 
 ## From source
