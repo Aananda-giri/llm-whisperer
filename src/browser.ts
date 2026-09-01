@@ -33,8 +33,8 @@ export function validateBrowserProfile(profile: string): string {
  * Two modes (controlled by CDP_URL env var):
  *
  *  Profile mode (default) — Launches a browser (bundled Chromium by default, or
- *              the channel set via BROWSER, e.g. "chrome") with one shared
- *              persistent profile. Run `wspr login <provider>` (with serve
+ *              the channel set via WSPR_BROWSER_CHANNEL, e.g. "chrome") with one
+ *              shared persistent profile. Run `wspr login <provider>` (with serve
  *              stopped) once per provider to authenticate.
  *
  *  CDP mode — Attaches to an already-running Chrome via `CDP_URL`

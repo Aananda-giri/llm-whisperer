@@ -61,8 +61,9 @@ export interface AppConfig {
   /**
    * Playwright browser channel to launch (e.g. "chrome", "msedge", "chrome-beta").
    * Undefined ⇒ Playwright's bundled Chromium (the zero-config default for the
-   * npm package). Set BROWSER=chrome to drive a locally-installed Google Chrome,
-   * which avoids Google's "this browser may not be secure" login block.
+   * npm package). Set WSPR_BROWSER_CHANNEL=chrome to drive a locally-installed
+   * Google Chrome, which avoids Google's "this browser may not be secure"
+   * login block.
    */
   browserChannel?: string;
   /** Used when a request does not specify its own `profile`. */
@@ -82,6 +83,44 @@ const REQUIRED_FIELDS: (keyof ProviderConfig)[] = [
   "inputSelector",
   "responseSelector",
 ];
+
+/**
+ * Channels Playwright's Chromium family knows how to launch. Used to decide
+ * whether a legacy `BROWSER` env var is a real channel — desktops often export
+ * `BROWSER` as a *command* (e.g. "omarchy-launch-browser", "xdg-open"), which
+ * Playwright cannot launch. Those values are ignored.
+ */
+const KNOWN_BROWSER_CHANNELS = new Set([
+  "chromium",
+  "chrome",
+  "chrome-beta",
+  "chrome-dev",
+  "chrome-canary",
+  "msedge",
+  "msedge-beta",
+  "msedge-dev",
+  "msedge-canary",
+]);
+
+/**
+ * Resolve the browser channel: WSPR_BROWSER_CHANNEL wins. Legacy `BROWSER` is
+ * used only when it names a known Playwright channel, so desktop `BROWSER`
+ * commands (xdg-open, …) never break launching.
+ */
+function resolveBrowserChannel(): string | undefined {
+  const fromEnv = (name: string) => process.env[name]?.trim().toLowerCase();
+  const explicit = fromEnv("WSPR_BROWSER_CHANNEL");
+  if (explicit && explicit !== "chromium") return explicit;
+  if (explicit === "chromium") return undefined; // bundled Chromium is the default
+  const legacy = fromEnv("BROWSER");
+  if (legacy && KNOWN_BROWSER_CHANNELS.has(legacy) && legacy !== "chromium") {
+    console.warn(
+      `BROWSER="${legacy}" is deprecated — rename it to WSPR_BROWSER_CHANNEL="${legacy}".`,
+    );
+    return legacy;
+  }
+  return undefined;
+}
 
 function findProvidersFile(explicit?: string): string {
   const candidates = [
@@ -157,10 +196,9 @@ export function loadConfig(file?: string): AppConfig {
     port: Number(process.env.PORT ?? 9777),
     profilesDir: process.env.PROFILES_DIR ?? defaultProfilesDir,
     headless: (process.env.HEADLESS ?? "false").toLowerCase() !== "false",
-    // Unset ⇒ bundled Chromium. "chromium" is treated as the default too.
-    browserChannel: ((c) => (c && c.toLowerCase() !== "chromium" ? c : undefined))(
-      process.env.BROWSER?.trim(),
-    ),
+    // Unset ⇒ bundled Chromium. See resolveBrowserChannel() for the legacy
+    // BROWSER fallback and its channel allowlist.
+    browserChannel: resolveBrowserChannel(),
     browserProfile: defaultBrowserProfile,
     warmTabs: (process.env.WSPR_WARM ?? "false").toLowerCase() === "true",
     providers,

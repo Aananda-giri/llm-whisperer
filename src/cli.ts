@@ -30,7 +30,7 @@ Usage:
 Environment:
   PORT                 API port (default 9777)
   HEADLESS             true/false — hide the browser (default false)
-  BROWSER              browser channel: chromium (default), chrome, msedge, …
+  WSPR_BROWSER_CHANNEL browser channel: chromium (default), chrome, msedge, …
   WSPR_WARM            true/false — pre-open browser tabs at startup (default false;
                        otherwise they launch lazily on the first browser request)
   WSPR_BROWSER_PROFILE default browser profile for logins and requests (default "${DEFAULT_BROWSER_PROFILE}")
