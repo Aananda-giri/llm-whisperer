@@ -9,7 +9,7 @@ in the shell.
 |---|---|---|
 | `PORT` | `9777` | Port the HTTP API listens on (see note) |
 | `HEADLESS` | `false` | `true` to hide the browser window |
-| `BROWSER` | `chromium` | Browser channel for profile mode: `chromium`, `chrome`, `msedge`, … |
+| `WSPR_BROWSER_CHANNEL` | `chromium` | Browser channel for profile mode: `chromium`, `chrome`, `msedge`, … |
 | `WSPR_WARM` | `false` | `true` to pre-open browser tabs at startup; otherwise they launch lazily on the first browser-provider request |
 | `WSPR_BROWSER_PROFILE` | `default` | Default browser profile for logins and requests that don't name one |
 | `PROFILES_DIR` | `~/.config/llm-whisperer/profiles` | Where sessions and sentinel files are stored |
@@ -33,7 +33,7 @@ HEADLESS=true wspr serve    # no visible window, runs in background
 HEADLESS=false wspr serve   # see the browser (good for debugging)
 ```
 
-### BROWSER
+### WSPR_BROWSER_CHANNEL
 
 Selects which browser **profile mode** launches:
 
@@ -44,17 +44,24 @@ Selects which browser **profile mode** launches:
 | `msedge` | Your locally-installed Microsoft Edge |
 
 ```bash
-BROWSER=chrome wspr serve
+WSPR_BROWSER_CHANNEL=chrome wspr serve
 ```
 
 The default is `chromium` so the npm package runs with no extra setup. Switch to
-`BROWSER=chrome` if a provider's login (notably **Google sign-in**) rejects the
-bundled Chromium with *"This browser or app may not be secure"* — a real Chrome
-build passes that check. The named channel must already be installed on your
-machine.
+`WSPR_BROWSER_CHANNEL=chrome` if a provider's login (notably **Google
+sign-in**) rejects the bundled Chromium with *"This browser or app may not be
+secure"* — a real Chrome build passes that check. The named channel must already
+be installed on your machine.
+
+The legacy `BROWSER` variable still works if it names one of the channels above,
+but it is deprecated — rename it to `WSPR_BROWSER_CHANNEL`. Because desktop
+environments often export `BROWSER` as a *command* (e.g. `xdg-open`,
+`omarchy-launch-browser`), values that are not a known Playwright channel are
+ignored.
 
 This setting only applies to profile mode. In **CDP mode** (`CDP_URL` set) the
-browser is whichever one you started yourself, so `BROWSER` is ignored.
+browser is whichever one you started yourself, so `WSPR_BROWSER_CHANNEL` is
+ignored.
 
 ### WSPR_WARM
 
