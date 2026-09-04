@@ -26,10 +26,28 @@ export interface Message {
   name?: string;
 }
 
-/** One streamed event from a browser provider — text delta or a completed tool call. */
+/** Upstream token usage carried on the `finish` event (OpenAI shape). */
+export interface Usage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}
+
+/**
+ * One streamed event from a provider — a text delta, a completed tool call, or
+ * the upstream stop reason.
+ *
+ * `finish` carries the provider's own OpenAI-style `finish_reason` ("stop",
+ * "length", "content_filter", …) and, when the upstream reports it, the real
+ * token `usage` — so the routes report truncation and honest token counts
+ * instead of always claiming "stop" / `0`. Only API-key providers emit it; a
+ * browser provider has no such signal, and the routes fall back to inferring
+ * the reason and reporting zero usage.
+ */
 export type StreamEvent =
   | { type: "text"; text: string }
-  | { type: "tool_call"; call: ToolCall };
+  | { type: "tool_call"; call: ToolCall }
+  | { type: "finish"; reason: string; usage?: Usage };
 
 export interface ChatOptions {
   /** Named persistent browser profile to use. */

@@ -7,6 +7,7 @@ import {
   type Message,
   type StreamEvent,
   type ToolCallingProvider,
+  type Usage,
 } from "./base.js";
 import { ToolCallAccumulator, toolChoiceToOpenAI, toolsToOpenAI } from "./openai-tools.js";
 
@@ -49,26 +50,34 @@ export class ApiLLMProvider extends BaseProvider implements EmbeddingProvider, T
   /**
    * Streams a completion, folding native `delta.tool_calls` fragments into
    * completed {@link StreamEvent}s. Text deltas yield as they arrive; tool calls
-   * are released once the stream signals completion (finish_reason or `[DONE]`).
+   * are released once the stream signals completion (finish_reason or `[DONE]`),
+   * followed by a single `finish` event carrying the upstream stop reason and,
+   * when the upstream reports it, the real token `usage`.
    */
   async *streamWithTools(messages: Message[], options: ChatOptions = {}): AsyncGenerator<StreamEvent> {
     const body = await this.request(messages, options);
 
     const acc = new ToolCallAccumulator();
+    let finishReason: string | undefined;
+    let usage: Usage | undefined;
     for await (const { done, data } of parseSSE(body)) {
       if (done) break;
+      // Usage arrives as a trailing chunk (often on the final `data:` line),
+      // so keep the last one seen across the whole stream.
+      if (data?.usage) usage = data.usage as Usage;
       const choice = data?.choices?.[0];
       const delta = choice?.delta ?? {};
       if (typeof delta.content === "string") yield { type: "text", text: delta.content };
       if (Array.isArray(delta.tool_calls)) {
         for (const tc of delta.tool_calls) acc.push(tc);
       }
-      if (choice?.finish_reason) {
-        for (const call of acc.flush()) yield { type: "tool_call", call };
-      }
+      if (choice?.finish_reason) finishReason = String(choice.finish_reason);
     }
     // A stream that ends without an explicit finish_reason still owes us calls.
     for (const call of acc.flush()) yield { type: "tool_call", call };
+    // Report upstream's own stop reason ("length" on truncation) and usage, so
+    // the routes don't have to assume "stop" / zero token counts.
+    if (finishReason) yield { type: "finish", reason: finishReason, usage };
   }
 
   /**
@@ -127,6 +136,16 @@ export class ApiLLMProvider extends BaseProvider implements EmbeddingProvider, T
       body.tools = toolsToOpenAI(options.tools);
       if (options.toolChoice !== undefined) body.tool_choice = toolChoiceToOpenAI(options.toolChoice);
     }
+    // Ask the upstream for token usage in the stream's trailing chunk, so the
+    // `finish` event can carry real numbers instead of the hardcoded zeros.
+    //
+    // CAVEAT: `stream_options` is OpenAI-specific. Most OpenAI-compatible
+    // providers (Groq, OpenRouter, Together, Cerebras, …) support it, but a
+    // provider that rejects unknown params could 400 on it. Real usage stops
+    // being available on that provider and `stream_options` must be dropped or
+    // made opt-in per provider. The rest of the flow degrades gracefully — the
+    // `finish` event is still emitted (reason only), and `usage` reads as zeros.
+    body.stream_options = { include_usage: true };
 
     const res = await fetch(endpoint, {
       method: "POST",

@@ -19,7 +19,12 @@ export interface EmitContext {
 export interface ClientTarget {
   id: string;
   label: string;
-  /** Conventional filename the CLI writes to when no --out is given. */
+  /**
+   * Conventional filename for this client's config, suggested in the CLI hint.
+   * Never written to implicitly — a client's real config (opencode.json holds
+   * agents, MCP servers, keybinds) must not be clobbered by a bare `wspr
+   * config`. Writing always requires an explicit `--out`.
+   */
   file?: string;
   /** Render a config document for this client. */
   emit(ctx: EmitContext): string;

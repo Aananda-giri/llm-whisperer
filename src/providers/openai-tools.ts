@@ -1,5 +1,25 @@
-import type { Message } from "./base.js";
+import type { Message, Usage } from "./base.js";
 import { newCallId, type ToolCall, type ToolChoice, type ToolDefinition } from "./tool-protocol.js";
+
+/**
+ * Re-present an upstream {@link Usage} as an OpenAI `usage` block. Missing
+ * fields become `0` so the response is always well-formed.
+ */
+export function openAIUsage(u?: Usage): { prompt_tokens: number; completion_tokens: number; total_tokens: number } {
+  return {
+    prompt_tokens: u?.prompt_tokens ?? 0,
+    completion_tokens: u?.completion_tokens ?? 0,
+    total_tokens: u?.total_tokens ?? 0,
+  };
+}
+
+/** Re-present an upstream {@link Usage} as an Anthropic `usage` block. */
+export function anthropicUsage(u?: Usage): { input_tokens: number; output_tokens: number } {
+  return {
+    input_tokens: u?.prompt_tokens ?? 0,
+    output_tokens: u?.completion_tokens ?? 0,
+  };
+}
 
 /**
  * Translate internal {@link ToolDefinition}s into the OpenAI `tools` array

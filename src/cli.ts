@@ -640,15 +640,30 @@ function configCmd(config: ReturnType<typeof loadConfig>, args: string[]): void 
   const ctx = { profile, baseUrl, models: listModels(config, profile), label };
   const out = target.emit(ctx);
 
-  const outFile = typeof flags["out"] === "string" ? flags["out"] : target.file;
-  if (outFile) {
-    const path = resolve(outFile);
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, out);
-    console.log(`Wrote ${basename(path)} (profile "${profile}", ${ctx.models.length} model(s)).`);
-  } else {
+  // Printing is the default: a client's config file is usually hand-maintained
+  // (opencode.json also holds agents, MCP servers, keybinds), so writing one
+  // takes an explicit --out rather than happening as a side effect.
+  const outFile = typeof flags["out"] === "string" ? flags["out"] : undefined;
+  if (!outFile) {
     console.log(out);
+    if (target.file) {
+      // stderr, so `wspr config opencode > opencode.json` still pipes cleanly.
+      console.error(
+        `\n(profile "${profile}", ${ctx.models.length} model(s). ` +
+          `Merge into ${target.file}, or write it with --out ${target.file}.)`,
+      );
+    }
+    return;
   }
+
+  const path = resolve(outFile);
+  const existed = existsSync(path);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, out);
+  console.log(
+    `${existed ? "Overwrote" : "Wrote"} ${basename(path)} ` +
+      `(profile "${profile}", ${ctx.models.length} model(s)).`,
+  );
 }
 
 main().catch((err) => {

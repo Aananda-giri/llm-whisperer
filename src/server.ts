@@ -16,6 +16,7 @@ import {
   type LLMProvider,
   type Message,
   type ToolCallingProvider,
+  type Usage,
 } from "./providers/base.js";
 import {
   newCallId,
@@ -25,7 +26,7 @@ import {
 } from "./providers/tool-protocol.js";
 import { ApiKeyMissingError } from "./providers/api.js";
 import { listModels, resolveModel } from "./models.js";
-import { toOpenAIWire } from "./providers/openai-tools.js";
+import { anthropicUsage, openAIUsage, toOpenAIWire } from "./providers/openai-tools.js";
 
 declare global {
   namespace Express {
@@ -57,8 +58,19 @@ function setProfileMiddleware(profile: string): express.RequestHandler {
  * Middleware for the `/p/:profile` mount. Express 4 exposes the mount-path
  * param here, so we stash it on `req` and the shared router needs no mergeParams.
  */
-const setProfileFromPath: express.RequestHandler = (req, _res, next) => {
-  req.wsprProfile = validateBrowserProfile(String(req.params.profile));
+const setProfileFromPath: express.RequestHandler = (req, res, next) => {
+  const raw = String(req.params.profile);
+  try {
+    req.wsprProfile = validateBrowserProfile(raw);
+  } catch (err) {
+    // validateBrowserProfile throws; letting it escape hands the request to
+    // Express's default handler, which answers 500 text/html. Every other
+    // error this API returns is JSON, so translate it here.
+    res.status(400).json({
+      error: { message: (err as Error).message, type: "invalid_request_error" },
+    });
+    return;
+  }
   next();
 };
 
@@ -226,20 +238,51 @@ function anthropicToolChoiceToInternal(toolChoice: any): ToolChoice {
  * response. With tools, we iterate the tool-aware stream; without, we simply
  * collect text deltas via `chat()`.
  */
+/**
+ * Map an OpenAI-style `finish_reason` onto the Anthropic `stop_reason`
+ * vocabulary. Returns undefined for anything unrecognized so the caller keeps
+ * its own inferred value.
+ */
+export function finishToStopReason(reason: string | undefined): string | undefined {
+  switch (reason) {
+    case "stop":
+      return "end_turn";
+    case "length":
+      return "max_tokens";
+    case "tool_calls":
+      return "tool_use";
+    case "content_filter":
+      return "refusal";
+    default:
+      return undefined;
+  }
+}
+
 async function collectText(
   llm: LLMProvider,
   messages: Message[],
   opts: ChatOptions,
   withTools: boolean,
-): Promise<{ text: string; toolCalls: ToolCall[] }> {
-  if (withTools) {
+): Promise<{ text: string; toolCalls: ToolCall[]; finish?: string; usage?: Usage }> {
+  // Drain the richer stream whenever the provider has one, even with no tools
+  // declared — it is the only path that carries the upstream finish reason and
+  // token usage, and `chat()` is itself just a text-concatenating adapter over
+  // it. Tool calls are only kept when the caller actually asked for tools.
+  if (supportsTools(llm)) {
     let text = "";
+    let finish: string | undefined;
+    let usage: Usage | undefined;
     const toolCalls: ToolCall[] = [];
-    for await (const ev of (llm as LLMProvider & ToolCallingProvider).streamWithTools(messages, opts)) {
+    for await (const ev of llm.streamWithTools(messages, opts)) {
       if (ev.type === "text") text += ev.text;
-      else toolCalls.push(ev.call);
+      else if (ev.type === "tool_call") {
+        if (withTools) toolCalls.push(ev.call);
+      } else {
+        finish = ev.reason;
+        usage = ev.usage;
+      }
     }
-    return { text, toolCalls };
+    return { text, toolCalls, finish, usage };
   }
   return { text: await llm.chat(messages, opts), toolCalls: [] };
 }
@@ -442,6 +485,7 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
       const send = (
         delta: Partial<{ role: string; content: string; tool_calls: unknown[] }>,
         finishReason: string | null = null,
+        usage?: Usage,
       ) =>
         res.write(
           `data: ${JSON.stringify({
@@ -450,18 +494,24 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
             created,
             model,
             choices: [{ index: 0, delta, finish_reason: finishReason }],
+            ...(usage ? { usage: openAIUsage(usage) } : {}),
           })}\n\n`,
         );
 
       try {
         send({ role: "assistant" });            // opening chunk — role only
-        if (withTools) {
+        if (supportsTools(llm)) {
           let toolIndex = 0;
           let toolCalled = false;
+          let upstreamFinish: string | undefined;
+          let upstreamUsage: Usage | undefined;
           for await (const ev of llm.streamWithTools(internal, opts)) {
             if (ev.type === "text") {
               send({ content: ev.text });
-            } else {
+            } else if (ev.type === "finish") {
+              upstreamFinish = ev.reason;
+              upstreamUsage = ev.usage;
+            } else if (withTools) {
               send({
                 tool_calls: [
                   {
@@ -475,7 +525,9 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
               toolCalled = true;
             }
           }
-          send({}, toolCalled ? "tool_calls" : "stop"); // closing chunk — finish_reason
+          // Upstream's reason wins ("length" on truncation); otherwise infer it.
+          // Usage rides the closing chunk (OpenAI's include_usage format).
+          send({}, upstreamFinish ?? (toolCalled ? "tool_calls" : "stop"), upstreamUsage);
         } else {
           for await (const delta of llm.stream(internal, opts)) {
             send({ content: delta });
@@ -514,7 +566,7 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
               finish_reason: "tool_calls",
             },
           ],
-          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          usage: openAIUsage(text.usage),
         });
         return;
       }
@@ -523,8 +575,16 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
         object: "chat.completion",
         created,
         model,
-        choices: [{ index: 0, message: { role: "assistant", content: text.text }, finish_reason: "stop" }],
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: text.text },
+            // Upstream's reason when we have one ("length" on truncation);
+            // browser providers report none, so assume a clean stop.
+            finish_reason: text.finish ?? "stop",
+          },
+        ],
+        usage: openAIUsage(text.usage),
       });
     } catch (err) {
       if (err instanceof LoginRequiredError || err instanceof ApiKeyMissingError) {
@@ -697,10 +757,12 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
           },
         });
 
-        if (withTools) {
+        if (supportsTools(llm)) {
           let blockIndex = -1;
           let textOpen = false;
           let toolCalled = false;
+          let upstreamFinish: string | undefined;
+          let upstreamUsage: Usage | undefined;
           const closeTextBlock = () => {
             if (textOpen) {
               event("content_block_stop", { index: blockIndex });
@@ -718,7 +780,10 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
                 });
               }
               emitTextBlock(blockIndex, ev.text);
-            } else {
+            } else if (ev.type === "finish") {
+              upstreamFinish = ev.reason;
+              upstreamUsage = ev.usage;
+            } else if (withTools) {
               closeTextBlock();
               blockIndex++;
               emitToolUse(blockIndex, ev.call);
@@ -727,8 +792,14 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
           }
           closeTextBlock();
           event("message_delta", {
-            delta: { stop_reason: toolCalled ? "tool_use" : "end_turn", stop_sequence: null },
-            usage: { output_tokens: 0 },
+            // Upstream's reason wins ("max_tokens" on truncation). Anthropic's
+            // cumulative output_tokens rides here from the upstream usage.
+            delta: {
+              stop_reason:
+                finishToStopReason(upstreamFinish) ?? (toolCalled ? "tool_use" : "end_turn"),
+              stop_sequence: null,
+            },
+            usage: { output_tokens: upstreamUsage?.completion_tokens ?? 0 },
           });
         } else {
           event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
@@ -770,9 +841,10 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
         role: "assistant",
         model,
         content,
-        stop_reason: out.toolCalls.length ? "tool_use" : "end_turn",
+        stop_reason:
+          finishToStopReason(out.finish) ?? (out.toolCalls.length ? "tool_use" : "end_turn"),
         stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 },
+        usage: anthropicUsage(out.usage),
       });
     } catch (err) {
       if (err instanceof LoginRequiredError || err instanceof ApiKeyMissingError) {

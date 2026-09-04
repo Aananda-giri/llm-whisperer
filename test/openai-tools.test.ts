@@ -1,13 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  anthropicUsage,
+  openAIUsage,
   toolsToOpenAI,
   toolChoiceToOpenAI,
   ToolCallAccumulator,
   toOpenAIWire,
 } from "../src/providers/openai-tools.js";
 import { openaiToolChoiceToInternal, openaiToolsToDefs } from "../src/server.js";
-import type { Message } from "../src/providers/base.js";
+import type { Message, Usage } from "../src/providers/base.js";
 
 describe("toolsToOpenAI round-trips against openaiToolsToDefs", () => {
   const defs = [
@@ -120,5 +122,34 @@ describe("ToolCallAccumulator", () => {
     assert.equal(calls[0].name, "f");
     assert.match(calls[0].id, /^call_/);
     assert.equal(calls[0].arguments, "{}");
+  });
+});
+
+describe("usage mapping", () => {
+  const usage: Usage = { prompt_tokens: 12, completion_tokens: 7, total_tokens: 19 };
+
+  it("openAIUsage carries upstream numbers", () => {
+    assert.deepEqual(openAIUsage(usage), {
+      prompt_tokens: 12,
+      completion_tokens: 7,
+      total_tokens: 19,
+    });
+  });
+
+  it("openAIUsage defaults missing fields to zero", () => {
+    assert.deepEqual(openAIUsage(), { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 });
+    assert.deepEqual(openAIUsage({ prompt_tokens: 5 }), {
+      prompt_tokens: 5,
+      completion_tokens: 0,
+      total_tokens: 0,
+    });
+  });
+
+  it("anthropicUsage maps prompt/completion onto input/output tokens", () => {
+    assert.deepEqual(anthropicUsage(usage), { input_tokens: 12, output_tokens: 7 });
+  });
+
+  it("anthropicUsage defaults to zero", () => {
+    assert.deepEqual(anthropicUsage(), { input_tokens: 0, output_tokens: 0 });
   });
 });

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { pendingTurn, turnContainsUser, type Message } from "../src/providers/base.js";
-import { anthropicToMessages, openaiToMessages } from "../src/server.js";
+import { anthropicToMessages, finishToStopReason, openaiToMessages } from "../src/server.js";
 
 const user = (content: string): Message => ({ role: "user", content });
 const assistant = (content: string): Message => ({ role: "assistant", content });
@@ -171,5 +171,22 @@ describe("anthropicToMessages — tool_result turns carrying text", () => {
       { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
     ], true);
     assert.equal(out.at(-1)?.role, "tool");
+  });
+});
+
+describe("finishToStopReason", () => {
+  it("maps an upstream truncation onto the Anthropic vocabulary", () => {
+    assert.equal(finishToStopReason("length"), "max_tokens");
+  });
+
+  it("maps the ordinary reasons", () => {
+    assert.equal(finishToStopReason("stop"), "end_turn");
+    assert.equal(finishToStopReason("tool_calls"), "tool_use");
+    assert.equal(finishToStopReason("content_filter"), "refusal");
+  });
+
+  it("returns undefined for an absent or unknown reason so the caller keeps its own", () => {
+    assert.equal(finishToStopReason(undefined), undefined);
+    assert.equal(finishToStopReason("something_new"), undefined);
   });
 });
