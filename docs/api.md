@@ -57,14 +57,28 @@ Send a message to a provider and get the response.
 
 | Field | Type | Values |
 |---|---|---|
-| `role` | string | `"user"` · `"assistant"` · `"system"` |
-| `content` | string | The message text |
+| `role` | string | `"user"` · `"assistant"` · `"system"` · `"tool"` |
+| `content` | string | The message text (empty on assistant turns that carry `tool_calls`) |
+| `tool_calls` | array | Optional — assistant turns that requested tools. Ignored by API-key providers. |
+| `tool_call_id` | string | Optional — `role: "tool"` turns: which call this result answers |
+| `name` | string | Optional — `role: "tool"` turns: the tool that produced the result |
 
 ### Conversation behaviour
 
-By default (`newChat` omitted or `false`), only the **last user message** is
-sent to the browser. The web UI already holds the conversation history from
-previous requests, so there is no need to re-send earlier turns.
+By default (`newChat` omitted or `false`), only the **pending turn** is sent to
+the browser — every message after the last `assistant` message. The web UI
+already holds the conversation history from previous requests, so there is no
+need to re-send earlier turns.
+
+In the common case that is just the newest user message. Two cases send more:
+
+- **The first turn of a conversation.** With no assistant message yet, a leading
+  `system` message is part of the pending turn and is sent along with the user
+  message, labelled `System:`. (Earlier versions dropped it silently.) Send
+  `newChat: true` if you want a guaranteed-clean thread to anchor it to.
+- **A tool loop.** After an assistant turn that requested tools, the pending turn
+  is the `role: "tool"` results, which are sent as `<tool_result>` blocks rather
+  than a re-ask of the original question. See [Tool calling](#tool-calling).
 
 When `newChat: true`, LLM-Whisperer clicks "New Chat" (or reloads the page),
 then sends all messages flattened into one prompt. Use this to switch topics
@@ -140,6 +154,8 @@ OpenAI-compatible chat completions. Point any OpenAI client at
 | `stream` | boolean | no | `true` for Server-Sent Events streaming. Default: `false`. |
 | `newChat` | boolean | no | `true` to start a fresh conversation first |
 | `profile` | string | no | Browser profile to use for this request (e.g. `email1`). Default: the provider's `profile` in `providers.yaml`, else `WSPR_BROWSER_PROFILE`, else `default`. Ignored by API-key providers. |
+| `tools` | array | no | OpenAI-style functions (`{"type":"function","function":{"name","description","parameters"}}`). See [Tool calling](#tool-calling). |
+| `tool_choice` | string \| object | no | `"auto"` `"none"` `"required"` or `{"type":"function","function":{"name":...}}`. |
 
 **Images (vision):** for API-key providers, `content` may be an OpenAI-style
 array of parts (`{"type":"text",...}` + `{"type":"image_url","image_url":{"url":...}}`).
@@ -195,6 +211,69 @@ resp = client.chat.completions.create(
 for chunk in resp:
     print(chunk.choices[0].delta.content or "", end="")
 ```
+
+---
+
+## Tool calling
+
+Both compatibility dialects accept `tools` / `tool_choice` (OpenAI) and `tools` /
+`tool_choice` (Anthropic). wspr **never executes tools** — it only translates the
+protocol. The calling application runs the tool functions and sends the results
+back as `role: "tool"` messages (OpenAI) or `tool_result` blocks (Anthropic).
+
+Two things are worth knowing up front:
+
+1. **Browser providers simulate tool calling by prompting.** A browser chat UI can
+   only ever give us rendered text, so the tool schemas are written into the
+   prompt and the model's `<tool_call>` / `</tool_call>` blocks are parsed back
+   into a real `tool_calls` response. Because this is prompt-based, reliability
+   depends on the model — a small or non-instruct model may ignore the tools or
+   emit malformed JSON. A malformed block degrades to ordinary prose, never a
+   `500`. The parser is deliberately lenient: it tolerates a wrapping Markdown
+   code fence, smart quotes, zero-width characters and trailing commas, all of
+   which chat UIs introduce when they re-render the model's output.
+2. **API-key providers still ignore `tools`.** For a provider with an `api:`
+   block, a request that carries `tools` logs one warning and proceeds as if the
+   tools were absent. They would need native passthrough upstream, which wspr
+   does not implement yet.
+
+### Example: OpenAI two-turn tool loop
+
+```bash
+# Turn 1 — ask with a tool available
+curl -s -X POST http://localhost:9777/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen",
+    "messages": [{"role":"user","content":"what is the weather in Kathmandu?"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a city.",
+        "parameters": {"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}
+      }
+    }]
+  }'
+
+# Expect: finish_reason "tool_calls" and a populated tool_calls array.
+
+# Turn 2 — feed the result back; wspr renders it into the browser thread.
+curl -s -X POST http://localhost:9777/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen",
+    "messages": [
+      {"role":"user","content":"what is the weather in Kathmandu?"},
+      {"role":"assistant","content":null,"tool_calls":[{"id":"call_x","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Kathmandu\"}"}}]},
+      {"role":"tool","tool_call_id":"call_x","content":"{\"temp_c\": 12}"}
+    ],
+    "tools": [{ "type":"function", "function": { "name":"get_weather" } }]
+  }'
+```
+
+> The tool `id` and `tool_call_id` are generated and echoed by wspr; no
+> server-side conversation state is kept, so any client can drive the loop.
 
 ---
 
@@ -323,10 +402,15 @@ otherwise the endpoint is open and the key can be anything.
 | `stream` | boolean | no | `true` for Anthropic-style SSE streaming. Default: `false`. |
 | `newChat` | boolean | no | `true` to start a fresh conversation first (browser providers) |
 | `profile` | string | no | Browser profile to use for this request (e.g. `email1`). Default: the provider's `profile` in `providers.yaml`, else `WSPR_BROWSER_PROFILE`, else `default`. Ignored by API-key providers. |
+| `tools` | array | no | Anthropic tools (`{"name","description","input_schema"}`). See [Tool calling](#tool-calling). |
+| `tool_choice` | string \| object | no | `"auto"` `"any"` `"tool"` or `{"type":"auto"|"any",...}`, `{"type":"tool","name":...}`. |
 
 Message `content` may be a string or an array of content blocks. Text blocks
-are concatenated; non-text blocks (e.g. images) are ignored — browser providers
-are text-only. For vision, use the OpenAI endpoint instead.
+are concatenated; images and other non-text blocks are ignored — browser
+providers are text-only. For vision, use the OpenAI endpoint instead. On the
+non-streaming path, `tool_use` / `tool_result` blocks are preserved for browser
+providers: a `tool_use` block on an assistant turn becomes `tool_calls`, and a
+`tool_result` block on a user turn becomes a `role: "tool"` message.
 
 ### Response (non-streaming)
 

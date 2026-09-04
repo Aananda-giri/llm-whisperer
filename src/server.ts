@@ -1,14 +1,35 @@
+import { timingSafeEqual } from "node:crypto";
 import express from "express";
 import type { AppConfig } from "./config.js";
 import type { SessionPool } from "./session-pool.js";
+import { Credential, VaultHandle, type LoginMethod } from "./credentials/vault.js";
+import { confirmSession } from "./credentials/session.js";
+import { checkSessions, readHealthCache, type HealthTarget } from "./credentials/health.js";
+import { validateBrowserProfile } from "./browser.js";
 import { buildProviders } from "./providers/factory.js";
-import { LoginRequiredError, supportsEmbeddings, type Message } from "./providers/base.js";
+import {
+  LoginRequiredError,
+  supportsEmbeddings,
+  supportsTools,
+  supportsAutoLogin,
+  type ChatOptions,
+  type LLMProvider,
+  type Message,
+  type ToolCallingProvider,
+} from "./providers/base.js";
+import {
+  newCallId,
+  type ToolCall,
+  type ToolChoice,
+  type ToolDefinition,
+} from "./providers/tool-protocol.js";
 import { ApiKeyMissingError } from "./providers/api.js";
 
 /**
  * Flatten an Anthropic content value (a string, or an array of content blocks)
  * down to plain text. Text blocks are concatenated; non-text blocks (e.g.
- * images) are ignored — the internal providers consume plain strings.
+ * images) are ignored — the internal providers consume plain strings. This is
+ * the text-only helper; tool-aware routing branches above it.
  */
 function blocksToText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -25,19 +46,169 @@ function blocksToText(content: unknown): string {
  * Convert an Anthropic Messages request — which carries the system prompt in a
  * separate `system` field and allows message `content` to be a string or an
  * array of content blocks — into the flat `Message[]` our providers consume.
+ *
+ * When `keepTools` is set (browser providers), tool blocks survive the
+ * conversion: `tool_use` blocks on an assistant turn become `tool_calls`, and
+ * `tool_result` blocks on a user turn become `role: "tool"` messages. Otherwise
+ * (API-key providers) non-text blocks are flattened away as before.
  */
-function anthropicToMessages(system: unknown, messages: any[]): Message[] {
+export function anthropicToMessages(system: unknown, messages: any[], keepTools = false): Message[] {
   const out: Message[] = [];
   const sys = blocksToText(system).trim();
   if (sys) out.push({ role: "system", content: sys });
   for (const m of messages) {
+    if (keepTools && m.role === "assistant") {
+      const blocks = Array.isArray(m.content) ? m.content : [{ type: "text", text: m.content }];
+      const toolUses = blocks.filter((b: any) => b?.type === "tool_use");
+      const msg: Message = { role: "assistant", content: blocksToText(m.content) };
+      if (toolUses.length) {
+        msg.tool_calls = toolUses.map((b: any) => ({
+          id: b.id,
+          name: b.name,
+          arguments: JSON.stringify(b.input ?? {}),
+        }));
+      }
+      out.push(msg);
+      continue;
+    }
+    if (keepTools && m.role === "user") {
+      const blocks = Array.isArray(m.content) ? m.content : null;
+      const toolResults = (blocks?.filter((b: any) => b?.type === "tool_result") ?? []) as any[];
+      if (toolResults.length) {
+        for (const b of toolResults) {
+          out.push({
+            role: "tool",
+            content: blocksToText(b.content),
+            tool_call_id: b.tool_use_id,
+          } as Message);
+        }
+        // A tool-result turn may also carry text ("…and answer in Nepali").
+        // Keep it as a trailing user message so the instruction is not lost.
+        const alsoText = blocksToText(m.content).trim();
+        if (alsoText) out.push({ role: "user", content: alsoText });
+        continue;
+      }
+    }
     out.push({ role: m.role, content: blocksToText(m.content) });
   }
   return out;
 }
 
-export function createServer(config: AppConfig, pool: SessionPool) {
-  const providers = buildProviders(config, pool);
+/**
+ * Convert an OpenAI chat request into the flat `Message[]` our providers
+ * consume. Flattens multimodal `content` arrays to text (browser UIs are
+ * text-only — the `[object Object]` bug), and carries assistant `tool_calls`
+ * plus `role: "tool"` messages through so a tool loop survives the boundary.
+ */
+export function openaiToMessages(messages: any[]): Message[] {
+  return messages.map((m) => {
+    if (m.role === "assistant") {
+      const msg: Message = { role: "assistant", content: typeof m.content === "string" ? m.content : "" };
+      const toolCalls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
+      if (toolCalls.length) {
+        msg.tool_calls = toolCalls.map((tc: any) => ({
+          id: tc.id ?? newCallId(),
+          name: tc.function?.name ?? "",
+          arguments:
+            typeof tc.function?.arguments === "string"
+              ? tc.function.arguments
+              : JSON.stringify(tc.function?.arguments ?? {}),
+        }));
+      }
+      return msg;
+    }
+    if (m.role === "tool") {
+      return {
+        role: "tool",
+        content: typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? ""),
+        tool_call_id: m.tool_call_id,
+        name: m.name,
+      } as Message;
+    }
+    return { role: m.role, content: openaiContentToText(m.content) } as Message;
+  });
+}
+
+/** Flatten an OpenAI `content` (string, or array of text/image parts) to plain text. */
+function openaiContentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((b): b is { type: string; text: string } =>
+      !!b && b.type === "text" && typeof b.text === "string",
+    )
+    .map((b) => b.text)
+    .join("\n");
+}
+
+/** Map OpenAI `tools` to internal {@link ToolDefinition}s (function shape). */
+function openaiToolsToDefs(tools: any): ToolDefinition[] {
+  if (!Array.isArray(tools)) return [];
+  const defs: ToolDefinition[] = [];
+  for (const t of tools) {
+    const fn = t?.function;
+    if (!fn?.name) continue;
+    defs.push({ name: fn.name, description: fn.description, parameters: fn.parameters });
+  }
+  return defs;
+}
+
+/** Map OpenAI `tool_choice` to the internal normalized directive. */
+function openaiToolChoiceToInternal(toolChoice: any): ToolChoice {
+  if (!toolChoice || toolChoice === "auto") return "auto";
+  if (toolChoice === "none" || toolChoice === "required") return toolChoice;
+  if (toolChoice.name) return { name: toolChoice.name };
+  if (toolChoice.function?.name) return { name: toolChoice.function.name };
+  return "auto";
+}
+
+/** Map Anthropic `tools` (input_schema shape) to internal {@link ToolDefinition}s. */
+function anthropicToolsToDefs(tools: any): ToolDefinition[] {
+  if (!Array.isArray(tools)) return [];
+  const defs: ToolDefinition[] = [];
+  for (const t of tools) {
+    if (!t?.name) continue;
+    defs.push({ name: t.name, description: t.description, parameters: t.input_schema });
+  }
+  return defs;
+}
+
+/** Map Anthropic `tool_choice` (auto/any/tool) to the internal normalized directive. */
+function anthropicToolChoiceToInternal(toolChoice: any): ToolChoice {
+  if (!toolChoice || toolChoice === "auto") return "auto";
+  if (toolChoice === "any" || toolChoice === "tool") return "required";
+  if (toolChoice === "none") return "none";
+  if (toolChoice.type === "auto") return "auto";
+  if (toolChoice.type === "any") return "required";
+  if (toolChoice.type === "tool" && toolChoice.name) return { name: toolChoice.name };
+  return "auto";
+}
+
+/**
+ * Collect the full text (and any tool calls) from a provider for a buffered
+ * response. With tools, we iterate the tool-aware stream; without, we simply
+ * collect text deltas via `chat()`.
+ */
+async function collectText(
+  llm: LLMProvider,
+  messages: Message[],
+  opts: ChatOptions,
+  withTools: boolean,
+): Promise<{ text: string; toolCalls: ToolCall[] }> {
+  if (withTools) {
+    let text = "";
+    const toolCalls: ToolCall[] = [];
+    for await (const ev of (llm as LLMProvider & ToolCallingProvider).streamWithTools(messages, opts)) {
+      if (ev.type === "text") text += ev.text;
+      else toolCalls.push(ev.call);
+    }
+    return { text, toolCalls };
+  }
+  return { text: await llm.chat(messages, opts), toolCalls: [] };
+}
+
+export function createServer(config: AppConfig, pool: SessionPool, vault?: VaultHandle, uiToken?: string) {
+  const providers = buildProviders(config, pool, vault);
   const app = express();
   app.use(express.json({ limit: "1mb" }));
 
@@ -130,7 +301,7 @@ export function createServer(config: AppConfig, pool: SessionPool) {
   });
 
   app.post("/v1/chat/completions", requireApiKey, async (req, res) => {
-    const { model, messages, stream = false, newChat, profile } = req.body ?? {};
+    const { model, messages, stream = false, newChat, profile, tools, tool_choice } = req.body ?? {};
     // model field: "qwen" selects the provider; "qwen/qwen2.5-max" also switches model.
     const [providerKey, modelName] = (model as string ?? "").split("/");
     const llm = providers.get(providerKey);
@@ -154,13 +325,41 @@ export function createServer(config: AppConfig, pool: SessionPool) {
     const id = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
 
+    // Tool calling is simulated only for browser-driven providers. API-key
+    // providers would get real native tool calling upstream, but wspr does not
+    // forward `tools` yet — so warn and proceed as today.
+    const toolDefs = openaiToolsToDefs(tools);
+    const useTools = toolDefs.length > 0;
+    const isBrowser = supportsTools(llm);
+    if (useTools && !isBrowser) {
+      console.warn(
+        `[${providerKey}] tools are ignored for API-key providers (only browser ` +
+          `providers simulate tool calling at this time).`,
+      );
+    }
+
+    // Browser providers get normalized messages (fixes the `[object Object]`
+    // content-array bug and carries tool_calls/tool role through). API-key
+    // providers keep the original array so vision parts reach upstream intact.
+    const internal = isBrowser ? openaiToMessages(messages) : (messages as Message[]);
+    const opts: ChatOptions = {
+      newChat,
+      model: modelName,
+      profile,
+      tools: toolDefs,
+      toolChoice: openaiToolChoiceToInternal(tool_choice),
+    };
+
     if (stream) {
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
       res.flushHeaders();
 
-      const send = (delta: Partial<{ role: string; content: string }>, finishReason: string | null = null) =>
+      const send = (
+        delta: Partial<{ role: string; content: string; tool_calls: unknown[] }>,
+        finishReason: string | null = null,
+      ) =>
         res.write(
           `data: ${JSON.stringify({
             id,
@@ -173,10 +372,33 @@ export function createServer(config: AppConfig, pool: SessionPool) {
 
       try {
         send({ role: "assistant" });            // opening chunk — role only
-        for await (const delta of llm.stream(messages as Message[], { newChat, model: modelName, profile })) {
-          send({ content: delta });
+        if (useTools && isBrowser) {
+          let toolIndex = 0;
+          let toolCalled = false;
+          for await (const ev of llm.streamWithTools(internal, opts)) {
+            if (ev.type === "text") {
+              send({ content: ev.text });
+            } else {
+              send({
+                tool_calls: [
+                  {
+                    index: toolIndex++,
+                    id: ev.call.id,
+                    type: "function",
+                    function: { name: ev.call.name, arguments: ev.call.arguments },
+                  },
+                ],
+              });
+              toolCalled = true;
+            }
+          }
+          send({}, toolCalled ? "tool_calls" : "stop"); // closing chunk — finish_reason
+        } else {
+          for await (const delta of llm.stream(internal, opts)) {
+            send({ content: delta });
+          }
+          send({}, "stop");                       // closing chunk — finish_reason
         }
-        send({}, "stop");                       // closing chunk — finish_reason
         res.write("data: [DONE]\n\n");
         res.end();
       } catch (err) {
@@ -187,13 +409,38 @@ export function createServer(config: AppConfig, pool: SessionPool) {
     }
 
     try {
-      const content = await llm.chat(messages as Message[], { newChat, model: modelName, profile });
+      const text = await collectText(llm, internal, opts, useTools && isBrowser);
+      if (text.toolCalls?.length) {
+        res.json({
+          id,
+          object: "chat.completion",
+          created,
+          model,
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: text.text || null,
+                tool_calls: text.toolCalls.map((c) => ({
+                  id: c.id,
+                  type: "function",
+                  function: { name: c.name, arguments: c.arguments },
+                })),
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        });
+        return;
+      }
       res.json({
         id,
         object: "chat.completion",
         created,
         model,
-        choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
+        choices: [{ index: 0, message: { role: "assistant", content: text.text }, finish_reason: "stop" }],
         usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       });
     } catch (err) {
@@ -259,7 +506,8 @@ export function createServer(config: AppConfig, pool: SessionPool) {
   // "qwen" picks the provider, "qwen/qwen2.5-max" also switches the model.
 
   app.post("/v1/messages", requireApiKey, async (req, res) => {
-    const { model, messages, system, stream = false, newChat, profile } = req.body ?? {};
+    const { model, messages, system, stream = false, newChat, profile, tools, tool_choice } =
+      req.body ?? {};
     const [providerKey, modelName] = (model as string ?? "").split("/");
     const llm = providers.get(providerKey);
 
@@ -281,7 +529,28 @@ export function createServer(config: AppConfig, pool: SessionPool) {
       return;
     }
 
-    const internal = anthropicToMessages(system, messages);
+    // Tool calling is simulated only for browser-driven providers. API-key
+    // providers keep flattening tools away (they would need native passthrough).
+    const toolDefs = anthropicToolsToDefs(tools);
+    const useTools = toolDefs.length > 0;
+    const isBrowser = supportsTools(llm);
+    if (useTools && !isBrowser) {
+      console.warn(
+        `[${providerKey}] tools are ignored for API-key providers (only browser ` +
+          `providers simulate tool calling at this time).`,
+      );
+    }
+
+    // Browser providers preserve tool blocks (tool_use ⇒ tool_calls,
+    // tool_result ⇒ role:"tool"); API-key providers flatten them away.
+    const internal = anthropicToMessages(system, messages, isBrowser);
+    const opts: ChatOptions = {
+      newChat,
+      model: modelName,
+      profile,
+      tools: toolDefs,
+      toolChoice: anthropicToolChoiceToInternal(tool_choice),
+    };
     const id = `msg_${Date.now()}`;
 
     if (stream) {
@@ -293,6 +562,20 @@ export function createServer(config: AppConfig, pool: SessionPool) {
       // Anthropic SSE: each event is a named `event:` line plus a `data:` line.
       const event = (type: string, data: object) =>
         res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+
+      const emitTextBlock = (index: number, delta: string) =>
+        event("content_block_delta", { index, delta: { type: "text_delta", text: delta } });
+      const emitToolUse = (index: number, call: ToolCall) => {
+        event("content_block_start", {
+          index,
+          content_block: { type: "tool_use", id: call.id, name: call.name, input: {} },
+        });
+        event("content_block_delta", {
+          index,
+          delta: { type: "input_json_delta", partial_json: call.arguments },
+        });
+        event("content_block_stop", { index });
+      };
 
       try {
         event("message_start", {
@@ -307,15 +590,51 @@ export function createServer(config: AppConfig, pool: SessionPool) {
             usage: { input_tokens: 0, output_tokens: 0 },
           },
         });
-        event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
-        for await (const delta of llm.stream(internal, { newChat, model: modelName, profile })) {
-          event("content_block_delta", { index: 0, delta: { type: "text_delta", text: delta } });
+
+        if (useTools && isBrowser) {
+          let blockIndex = -1;
+          let textOpen = false;
+          let toolCalled = false;
+          const closeTextBlock = () => {
+            if (textOpen) {
+              event("content_block_stop", { index: blockIndex });
+              textOpen = false;
+            }
+          };
+          for await (const ev of llm.streamWithTools(internal, opts)) {
+            if (ev.type === "text") {
+              if (!textOpen) {
+                blockIndex++;
+                textOpen = true;
+                event("content_block_start", {
+                  index: blockIndex,
+                  content_block: { type: "text", text: "" },
+                });
+              }
+              emitTextBlock(blockIndex, ev.text);
+            } else {
+              closeTextBlock();
+              blockIndex++;
+              emitToolUse(blockIndex, ev.call);
+              toolCalled = true;
+            }
+          }
+          closeTextBlock();
+          event("message_delta", {
+            delta: { stop_reason: toolCalled ? "tool_use" : "end_turn", stop_sequence: null },
+            usage: { output_tokens: 0 },
+          });
+        } else {
+          event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+          for await (const delta of llm.stream(internal, opts)) {
+            emitTextBlock(0, delta);
+          }
+          event("content_block_stop", { index: 0 });
+          event("message_delta", {
+            delta: { stop_reason: "end_turn", stop_sequence: null },
+            usage: { output_tokens: 0 },
+          });
         }
-        event("content_block_stop", { index: 0 });
-        event("message_delta", {
-          delta: { stop_reason: "end_turn", stop_sequence: null },
-          usage: { output_tokens: 0 },
-        });
         event("message_stop", {});
         res.end();
       } catch (err) {
@@ -326,14 +645,26 @@ export function createServer(config: AppConfig, pool: SessionPool) {
     }
 
     try {
-      const content = await llm.chat(internal, { newChat, model: modelName, profile });
+      const out = await collectText(llm, internal, opts, useTools && isBrowser);
+      const content: unknown[] = [];
+      if (out.text) content.push({ type: "text", text: out.text });
+      for (const c of out.toolCalls) {
+        let input: unknown = {};
+        try {
+          input = JSON.parse(c.arguments);
+        } catch {
+          input = c.arguments;
+        }
+        content.push({ type: "tool_use", id: c.id, name: c.name, input });
+      }
+      if (!content.length) content.push({ type: "text", text: "" });
       res.json({
         id,
         type: "message",
         role: "assistant",
         model,
-        content: [{ type: "text", text: content }],
-        stop_reason: "end_turn",
+        content,
+        stop_reason: out.toolCalls.length ? "tool_use" : "end_turn",
         stop_sequence: null,
         usage: { input_tokens: 0, output_tokens: 0 },
       });
@@ -347,5 +678,364 @@ export function createServer(config: AppConfig, pool: SessionPool) {
     }
   });
 
+  // ── credentials dashboard / UI ─────────────────────────────────────────────
+  // This is the one place the vault's redacted view is exposed. All /ui routes
+  // require the UI token (a separate gate from WSPR_API_KEY) and pass an
+  // origin check against DNS rebinding. Passwords are write-only here — the
+  // server never returns one, and reading one back is `wspr creds show`.
+
+  const uiGate: express.RequestHandler = (req, res, next) => {
+    if (!uiToken || !safeEqual(extractUiToken(req), uiToken)) {
+      res.status(401).json({ error: "Invalid or missing UI token." });
+      return;
+    }
+    next();
+  };
+
+  const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"]);
+  const originCheck: express.RequestHandler = (req, res, next) => {
+    const host = (req.header("host") ?? "").replace(/:\d+$/, "").toLowerCase();
+    if (!allowedHosts.has(host) && host !== (config.host ?? "").toLowerCase()) {
+      res.status(403).json({ error: "Forbidden host (DNS rebinding guard)." });
+      return;
+    }
+    const origin = req.header("origin");
+    if (origin && origin !== "null") {
+      let ohost = "";
+      try {
+        ohost = new URL(origin).hostname.toLowerCase();
+      } catch {
+        /* ignore malformed origin */
+      }
+      if (ohost && !allowedHosts.has(ohost) && ohost !== (config.host ?? "").toLowerCase()) {
+        res.status(403).json({ error: "Forbidden origin." });
+        return;
+      }
+    }
+    next();
+  };
+
+  const browserTargets = (): HealthTarget[] => {
+    const targets: HealthTarget[] = [];
+    for (const [name, cfg] of Object.entries(config.providers)) {
+      if (cfg.api || !cfg.requiresLogin) continue;
+      targets.push({ provider: name, profile: cfg.profile ?? config.browserProfile });
+    }
+    return targets;
+  };
+
+  const statusPayload = () => {
+    const health = readHealthCache(config);
+    const byKey = new Map(health.map((r) => [`${r.profile}\u0000${r.provider}`, r]));
+    const creds = vault?.listRedacted() ?? [];
+    const credByKey = new Map(creds.map((c) => [`${c.profile}\u0000${c.provider}`, c]));
+    const rows = browserTargets().map((t) => {
+      const key = `${t.profile}\u0000${t.provider}`;
+      const h = byKey.get(key);
+      const c = credByKey.get(key);
+      return {
+        provider: t.provider,
+        profile: t.profile,
+        hasCredential: c !== undefined,
+        credentialMethod: c?.method ?? null,
+        loggedIn: h?.loggedIn ?? false,
+        // "in" | "out" | "unknown"; absent until a check has run.
+        state: h?.state ?? null,
+        lastChecked: h?.checkedAt ?? null,
+      };
+    });
+    return { providers: rows, vaultLocked: vault?.locked ?? true };
+  };
+
+  app.get("/ui", uiGate, originCheck, (_req, res) => {
+    res.type("html").send(UI_HTML);
+  });
+
+  app.post("/ui/api/unlock", uiGate, originCheck, async (req, res) => {
+    const passphrase = String(req.body?.passphrase ?? "").trim();
+    if (!passphrase || !vault) {
+      res.status(400).json({ error: "A passphrase is required to unlock the vault." });
+      return;
+    }
+    try {
+      await vault.unlock(passphrase);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(401).json({ error: `Could not unlock: ${(e as Error).message}` });
+    }
+  });
+
+  app.get("/ui/api/status", uiGate, originCheck, (_req, res) => {
+    res.json(statusPayload());
+  });
+
+  app.get("/ui/api/credentials", uiGate, originCheck, (req, res) => {
+    const profile = typeof req.query.profile === "string" ? req.query.profile : undefined;
+    res.json(vault?.listRedacted(profile) ?? []);
+  });
+
+  app.post("/ui/api/credentials", uiGate, originCheck, async (req, res) => {
+    const { profile, provider, email, password, method, note } = req.body ?? {};
+    if (!provider || !profile) {
+      res.status(400).json({ error: "`provider` and `profile` are required." });
+      return;
+    }
+    const cfg = config.providers[provider];
+    if (!cfg || cfg.api) {
+      res.status(400).json({ error: `Unknown browser provider "${provider}".` });
+      return;
+    }
+    const value = String(email ?? "").trim();
+    if (!value) {
+      res.status(400).json({ error: "`email` is required." });
+      return;
+    }
+    const m: LoginMethod = method === "manual" || password === undefined || password === ""
+      ? "manual"
+      : "password";
+    const cred = new Credential(
+      value,
+      m,
+      new Date().toISOString(),
+      m === "password" ? String(password) : undefined,
+      note ? String(note) : undefined,
+    );
+    if (!vault) {
+      res.status(503).json({ error: "No credential vault is configured." });
+      return;
+    }
+    try {
+      await vault.set(validateBrowserProfile(profile), provider, cred);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(409).json({ error: (e as Error).message });
+    }
+  });
+
+  app.delete("/ui/api/credentials/:profile/:provider", uiGate, originCheck, async (req, res) => {
+    const profile = String(req.params.profile);
+    const provider = String(req.params.provider);
+    if (!vault) {
+      res.status(503).json({ error: "No credential vault is configured." });
+      return;
+    }
+    try {
+      await vault.remove(profile, provider);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  app.post("/ui/api/check", uiGate, originCheck, async (_req, res) => {
+    try {
+      await checkSessions(pool, config, browserTargets());
+      res.json(statusPayload());
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  app.post("/ui/api/login/:provider/:profile", uiGate, originCheck, async (req, res) => {
+    const provider = String(req.params.provider);
+    const profile = validateBrowserProfile(String(req.params.profile));
+    const cfg = config.providers[provider];
+    if (!cfg || cfg.api || !cfg.login) {
+      res.status(400).json({ error: `Provider "${provider}" has no auto-login block.` });
+      return;
+    }
+    // Go through the provider's guarded autoLogin, never `attemptLogin`
+    // directly: that is what keeps the never-retry rule true here too, so
+    // clicking "Login" repeatedly cannot replay a wrong password and lock the
+    // account.
+    const llm = providers.get(provider);
+    if (!llm || !supportsAutoLogin(llm)) {
+      res.status(400).json({ error: `Provider "${provider}" cannot auto-login.` });
+      return;
+    }
+    const page = await pool.acquire(provider, profile);
+    try {
+      const attempt = await llm.autoLogin(page, profile);
+      // Positive confirmation, not merely "the logged-out marker is missing" —
+      // otherwise a provider with stale selectors reports a happy green
+      // "logged in" on top of an attempt that plainly failed.
+      const state = await confirmSession(page, cfg).catch(() => "unknown" as const);
+      res.json({ ok: attempt.ok || state === "in", loggedIn: state === "in", state, reason: attempt.reason });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    } finally {
+      pool.release(provider, profile, page);
+    }
+  });
+
   return app;
 }
+
+/**
+ * Constant-time string compare, so the token guarding a password store cannot
+ * be recovered a byte at a time. Length is compared first and leaks only the
+ * length, which for a fixed-size token is not a secret.
+ */
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
+/** A UI token is checked against the WSPR_UI_TOKEN (query or x-ui-token header). */
+function extractUiToken(req: express.Request): string {
+  const fromQuery = typeof req.query.token === "string" ? req.query.token : "";
+  const fromHeader = req.header("x-ui-token") ?? "";
+  return (fromQuery || fromHeader).trim();
+}
+
+const UI_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llm-whisperer — credentials</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; padding: 0 1rem; max-width: 64rem; }
+  h1 { font-size: 1.4rem; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #8882; }
+  th { font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; color: #888; }
+  input, button { font: inherit; padding: .4rem .6rem; margin: .2rem; }
+  button { cursor: pointer; }
+  .ok { color: #2e9b57; } .bad { color: #c0392b; } .warn { color: #b26a00; font-weight: 600; }
+  .muted { color: #999; }
+  form.inline { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  .card { border: 1px solid #8882; border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<h1>🤫 llm-whisperer credentials</h1>
+<p class="muted">Passwords are write-only here. To read one back, use <code>wspr creds show &lt;provider&gt;</code> on the machine running the server.</p>
+
+<div class="card">
+  <strong>Vault: </strong><span id="lockStatus">…</span>
+  <button id="check">Check sessions</button>
+</div>
+
+<div class="card">
+  <h2>Add / update credential</h2>
+  <form id="credForm" class="inline">
+    <input id="fProvider" placeholder="provider (qwen)" required>
+    <input id="fProfile" placeholder="profile (default)" value="default">
+    <input id="fEmail" placeholder="email" required>
+    <input id="fPassword" type="password" placeholder="password (blank = manual)">
+    <button type="submit">Save</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Stored credentials</h2>
+  <table id="creds"><thead><tr><th>Provider</th><th>Profile</th><th>Email</th><th>Method</th><th>Password</th><th></th></tr></thead><tbody></tbody></table>
+</div>
+
+<div class="card">
+  <h2>Session health</h2>
+  <table id="status"><thead><tr><th>Provider</th><th>Profile</th><th>Credential</th><th>Logged in</th><th>Checked</th><th></th></tr></thead><tbody></tbody></table>
+</div>
+
+<script>
+(function () {
+  var params = new URLSearchParams(window.location.search);
+  var TOKEN = params.get("token") || "";
+  function el(id) { return document.getElementById(id); }
+  function api(path, opts) {
+    var headers = { "x-ui-token": TOKEN };
+    var o = opts || {};
+    if (o.body) headers["Content-Type"] = "application/json";
+    var init = { method: o.method || "GET", headers: headers };
+    if (o.body) init.body = JSON.stringify(o.body);
+    return fetch(path, init).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (data) {
+        if (!r.ok) throw new Error(data.error || "Error " + r.status);
+        return data;
+      });
+    });
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function renderCreds(rows) {
+    var tb = el("creds").querySelector("tbody");
+    tb.innerHTML = "";
+    rows.forEach(function (c) {
+      var tr = document.createElement("tr");
+      tr.innerHTML = "<td>" + esc(c.provider) + "</td><td>" + esc(c.profile) + "</td><td>" + esc(c.email) +
+        "</td><td>" + esc(c.method) + "</td><td>" + (c.hasPassword ? "••••••" : "none") + "</td>" +
+        "<td><button data-del='" + esc(c.provider) + "' data-prof='" + esc(c.profile) + "'>Delete</button></td>";
+      tb.appendChild(tr);
+    });
+    tb.querySelectorAll("button[data-del]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        api("/ui/api/credentials/" + encodeURIComponent(btn.dataset.prof) + "/" + encodeURIComponent(btn.dataset.del), { method: "DELETE" })
+          .then(refresh).catch(function (e) { alert(e.message); });
+      });
+    });
+  }
+  function renderHealth(rows) {
+    var tb = el("status").querySelector("tbody");
+    tb.innerHTML = "";
+    rows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      var cred = r.hasCredential ? (r.credentialMethod || "manual") : "<span class='bad'>none</span>";
+      var login = r.state === "in" ? "<span class='ok'>yes</span>"
+        : r.state === "out" ? "<span class='bad'>no</span>"
+        : r.state === "unknown" ? "<span class='warn' title='Matched neither loggedOutSelector nor inputSelector — the selectors in providers.yaml are probably stale.'>unknown</span>"
+        : "<span class='muted'>—</span>";
+      var checked = r.lastChecked ? new Date(r.lastChecked).toLocaleString() : "<span class='muted'>never</span>";
+      tr.innerHTML = "<td>" + esc(r.provider) + "</td><td>" + esc(r.profile) + "</td><td>" + cred + "</td><td>" + login +
+        "</td><td>" + checked + "</td><td><button data-login='" + esc(r.provider) + "' data-prof='" + esc(r.profile) + "'>Login</button></td>";
+      tb.appendChild(tr);
+    });
+    tb.querySelectorAll("button[data-login]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        btn.disabled = true; btn.textContent = "…";
+        api("/ui/api/login/" + encodeURIComponent(btn.dataset.prof) + "/" + encodeURIComponent(btn.dataset.login), { method: "POST" })
+          .then(function (r) { alert(r.loggedIn ? "Logged in." : "Login did not complete: " + (r.reason || "unknown")); })
+          .catch(function (e) { alert(e.message); })
+          .finally(function () { btn.disabled = false; btn.textContent = "Login"; refresh(); });
+      });
+    });
+  }
+  function refresh() {
+    return Promise.all([api("/ui/api/status"), api("/ui/api/credentials")]).then(function (res) {
+      var s = res[0]; var creds = res[1];
+      el("lockStatus").textContent = s.vaultLocked ? "Locked" : "Unlocked";
+      renderCreds(creds); renderHealth(s.providers);
+    }).catch(function (e) { el("lockStatus").textContent = "Token problem: " + e.message; });
+  }
+  el("check").addEventListener("click", function () {
+    el("check").disabled = true; el("check").textContent = "Checking…";
+    api("/ui/api/check", { method: "POST" }).then(function (s) {
+      renderHealth(s.providers);
+    }).catch(function (e) { alert(e.message); }).finally(function () {
+      el("check").disabled = false; el("check").textContent = "Check sessions";
+    });
+  });
+  el("credForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var body = {
+      provider: el("fProvider").value.trim(),
+      profile: el("fProfile").value.trim() || "default",
+      email: el("fEmail").value.trim(),
+      password: el("fPassword").value,
+    };
+    api("/ui/api/credentials", { method: "POST", body: body }).then(function () {
+      el("fPassword").value = ""; refresh();
+    }).catch(function (e) { alert(e.message); });
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>`;

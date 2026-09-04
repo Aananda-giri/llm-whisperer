@@ -2,11 +2,34 @@ import type { Page } from "playwright";
 import type { ProviderConfig } from "../config.js";
 import type { SessionPool } from "../session-pool.js";
 import { DEFAULT_BROWSER_PROFILE, validateBrowserProfile } from "../browser.js";
+import { isLoggedIn } from "../credentials/session.js";
+import { attemptLogin, type AttemptResult } from "../credentials/login.js";
+import type { Vault } from "../credentials/vault.js";
+import {
+  renderToolCalls,
+  renderToolPreamble,
+  renderToolResult,
+  ToolCallScanner,
+  type ToolCall,
+  type ToolChoice,
+  type ToolDefinition,
+} from "./tool-protocol.js";
 
 export interface Message {
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
+  /** Assistant turns that requested tools (OpenAI `tool_calls`). */
+  tool_calls?: ToolCall[];
+  /** Tool-result turns: which call this result answers. */
+  tool_call_id?: string;
+  /** Tool-result turns: the tool that produced the result. */
+  name?: string;
 }
+
+/** One streamed event from a browser provider — text delta or a completed tool call. */
+export type StreamEvent =
+  | { type: "text"; text: string }
+  | { type: "tool_call"; call: ToolCall };
 
 export interface ChatOptions {
   /** Named persistent browser profile to use. */
@@ -24,6 +47,13 @@ export interface ChatOptions {
    * model is currently selected in the browser tab.
    */
   model?: string;
+  /**
+   * Tool definitions to describe to the model via prompting. Browser providers
+   * simulate tool calling (prompt-in / parse-out); wspr never executes tools.
+   */
+  tools?: ToolDefinition[];
+  /** Normalized tool selection directive (OpenAI/Anthropic shapes are mapped upstream). */
+  toolChoice?: ToolChoice;
 }
 
 /**
@@ -66,6 +96,55 @@ export function supportsEmbeddings(p: LLMProvider): p is LLMProvider & Embedding
 }
 
 /**
+ * Optional capability for providers that can simulate tool calling. Only the
+ * browser-driven providers implement this — API-key providers get real native
+ * tool calling by simply passing `tools` through upstream, so they must NOT be
+ * run through this prompt hack. Use {@link supportsTools} to check before
+ * calling.
+ */
+export interface ToolCallingProvider {
+  streamWithTools(messages: Message[], options?: ChatOptions): AsyncGenerator<StreamEvent>;
+}
+
+/** Type guard: does this provider simulate tool calling? */
+export function supportsTools(p: LLMProvider): p is LLMProvider & ToolCallingProvider {
+  return typeof (p as Partial<ToolCallingProvider>).streamWithTools === "function";
+}
+
+/**
+ * Optional capability for providers that can submit a stored credential. Only
+ * browser providers implement it; going through this (rather than calling
+ * `attemptLogin` directly) is what keeps the never-retry guard in one place.
+ */
+export interface AutoLoginProvider {
+  autoLogin(page: Page, profile: string): Promise<AttemptResult>;
+}
+
+/** Type guard: can this provider replay a stored credential? */
+export function supportsAutoLogin(p: LLMProvider): p is LLMProvider & AutoLoginProvider {
+  return typeof (p as Partial<AutoLoginProvider>).autoLogin === "function";
+}
+
+/**
+ * The trailing run of messages after the last assistant message. With the
+ * default `newChat: false`, this is what actually gets sent to the browser —
+ * and the whole reason a tool loop works: feeding back `[user, assistant,
+ * tool, tool]` sends the two `<tool_result>` blocks, not a re-ask of the stale
+ * user question.
+ */
+export function pendingTurn(messages: Message[]): Message[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant") return messages.slice(i + 1);
+  }
+  return messages;
+}
+
+/** Does this turn include a user question (as opposed to only tool results)? */
+export function turnContainsUser(messages: Message[]): boolean {
+  return messages.some((m) => m.role === "user");
+}
+
+/**
  * Shared base: implements `chat()` (collect all deltas) in terms of the
  * subclass's `stream()`, so each provider type only writes the streaming logic.
  */
@@ -90,27 +169,59 @@ export abstract class BaseProvider implements LLMProvider {
  * services can subclass and override the protected hooks.
  */
 export class WebLLMProvider extends BaseProvider {
+  /**
+   * Credentials that have already *failed* for this provider×profile in this
+   * process. A failed attempt is never retried (a retry storm can lock the
+   * account) until the vault entry is changed.
+   *
+   * A successful attempt is removed again — otherwise a long-running
+   * `wspr serve` would auto-login each provider exactly once and then refuse
+   * to recover the next time that session lapsed, which is the whole point.
+   */
+  private readonly failedKeys = new Set<string>();
+
+  /**
+   * Auto-login is on when a vault is unlocked and WSPR_AUTO_LOGIN is not
+   * "false". A credential is attempted once, then the request raises
+   * LoginRequiredError exactly as it did before auto-login existed.
+   */
+  private readonly autoLoginEnabled: boolean;
+
   constructor(
     name: string,
     protected readonly config: ProviderConfig,
     protected readonly pool: SessionPool,
+    protected readonly vault?: Vault,
   ) {
     super(name);
+    this.autoLoginEnabled = !!vault && (process.env.WSPR_AUTO_LOGIN ?? "true") !== "false";
   }
 
   /**
-   * Core method: yields text deltas as the LLM streams its response.
-   * Acquires a page from the pool, submits the prompt, streams back deltas,
-   * then releases the page.
+   * Text-only streaming adapter: forwards only text deltas, so the existing
+   * {@link LLMProvider} contract and every current call site are untouched.
+   * Use {@link streamWithTools} when tool calling is needed.
    */
   async *stream(messages: Message[], options: ChatOptions = {}): AsyncGenerator<string> {
+    for await (const ev of this.streamWithTools(messages, options)) {
+      if (ev.type === "text") yield ev.text;
+    }
+  }
+
+  /**
+   * Core method: yields text deltas as the LLM streams its response, and — when
+   * `options.tools` are given — parses `<tool_call>` blocks out of the stream
+   * into completed {@link StreamEvent}s. Acquires a page from the pool,
+   * submits the prompt, streams back events, then releases the page.
+   */
+  async *streamWithTools(messages: Message[], options: ChatOptions = {}): AsyncGenerator<StreamEvent> {
     const profile = validateBrowserProfile(
       options.profile ?? this.config.profile ?? DEFAULT_BROWSER_PROFILE,
     );
     const page = await this.pool.acquire(this.name, profile);
     try {
       await this.ensureOnPage(page);
-      await this.ensureLoggedIn(page);
+      await this.ensureLoggedIn(page, profile);
 
       if (options.newChat) {
         await this.newConversation(page);
@@ -119,14 +230,49 @@ export class WebLLMProvider extends BaseProvider {
         await this.switchModel(page, options.model);
       }
 
-      const lastUser = [...messages].reverse().find((m) => m.role === "user");
-      const prompt = options.newChat
-        ? this.flatten(messages)
-        : (lastUser?.content ?? this.flatten(messages));
+      // Only scan for tool calls when the caller actually declared tools —
+      // otherwise a model legitimately writing `<tool_call>` in prose would
+      // get mangled.
+      const tools = options.tools;
+      const scanner = tools?.length
+        ? new ToolCallScanner(new Set(tools.map((t) => t.name)))
+        : null;
+
+      const turn = pendingTurn(messages);
+      let prompt = options.newChat ? this.flatten(messages) : this.flatten(turn);
+      if (!options.newChat && !prompt) {
+        // Degenerate case (messages end on an assistant turn): fall back to
+        // the last user message so we never send a blank prompt.
+        const lastUser = [...messages].reverse().find((m) => m.role === "user");
+        prompt = lastUser?.content ?? "";
+      }
+
+      // Stateless preamble rule: restate the tool schema whenever we are
+      // opening a fresh user question. A turn that is only tool results skips
+      // it — the browser thread already holds the instructions from the return.
+      if (turnContainsUser(turn) && tools?.length && options.toolChoice !== "none") {
+        const preamble = renderToolPreamble(tools, options.toolChoice);
+        if (preamble) prompt = `${preamble}\n\n${prompt}`;
+      }
 
       const before = await this.countResponses(page);
       await this.submitPrompt(page, prompt);
-      yield* this.streamAnswer(page, before);
+
+      for await (const delta of this.streamAnswer(page, before)) {
+        if (scanner) {
+          const out = scanner.push(delta);
+          if (out.text) yield { type: "text", text: out.text };
+          for (const call of out.calls) yield { type: "tool_call", call };
+        } else {
+          yield { type: "text", text: delta };
+        }
+      }
+
+      if (scanner) {
+        const out = scanner.flush();
+        if (out.text) yield { type: "text", text: out.text };
+        for (const call of out.calls) yield { type: "tool_call", call };
+      }
     } finally {
       this.pool.release(this.name, profile, page);
     }
@@ -140,24 +286,61 @@ export class WebLLMProvider extends BaseProvider {
     }
   }
 
-  protected async ensureLoggedIn(page: Page): Promise<void> {
+  protected async ensureLoggedIn(page: Page, profile?: string): Promise<void> {
     if (!this.config.requiresLogin) return;
 
-    if (this.config.loggedOutSelector) {
-      const out = await page
-        .locator(this.config.loggedOutSelector)
-        .first()
-        .isVisible()
-        .catch(() => false);
-      if (out) throw new LoginRequiredError(this.name);
-      return;
-    }
+    if (await isLoggedIn(page, this.config)) return;
 
-    const input = page.locator(this.config.inputSelector).first();
-    const visible = await input.isVisible().catch(() => false);
-    if (!visible) {
+    const profileName = validateBrowserProfile(profile ?? this.config.profile ?? DEFAULT_BROWSER_PROFILE);
+    if (this.autoLoginEnabled) await this.autoLogin(page, profileName);
+
+    if (!(await isLoggedIn(page, this.config))) {
       throw new LoginRequiredError(this.name);
     }
+  }
+
+  /**
+   * One guarded auto-login attempt using the stored credential, if there is
+   * one. This is the *only* path that may submit a stored password, so the
+   * never-retry rule holds everywhere: the request path calls it via
+   * {@link ensureLoggedIn}, and the dashboard's "Login" button calls it
+   * directly rather than reaching for `attemptLogin`.
+   *
+   * Returns why nothing was attempted, so a caller can say so.
+   */
+  async autoLogin(page: Page, profile: string): Promise<AttemptResult> {
+    if (!this.vault) return { ok: false, reason: "no vault is unlocked" };
+
+    const profileName = validateBrowserProfile(profile);
+    const cred = this.vault.get(profileName, this.name);
+    if (!cred) return { ok: false, reason: `no credential for "${this.name}" in profile "${profileName}"` };
+    if (!this.config.login) return { ok: false, reason: `"${this.name}" has no login: block in providers.yaml` };
+    if (cred.method !== "password" || !cred.password) {
+      return { ok: false, reason: "credential is manual — log in by hand in the open tab" };
+    }
+
+    // `updatedAt` is part of the key, so editing the credential in the vault
+    // (via `wspr creds set` or the dashboard) clears the failure by producing
+    // a new key — no cross-object invalidation needed.
+    const key = `${profileName}\u0000${this.name}\u0000${cred.updatedAt}`;
+    if (this.failedKeys.has(key)) {
+      return {
+        ok: false,
+        reason: "this credential already failed once in this process — update it to try again",
+      };
+    }
+
+    // Mark before attempting, so a throw or a crash mid-attempt still counts
+    // as the one try this credential gets. A wrong password submitted in a
+    // loop locks accounts.
+    this.failedKeys.add(key);
+    const attempt = await attemptLogin(page, this.config, cred);
+    // Clear on success: a credential that works is not a failed one, and the
+    // session will lapse again later in a long-running `wspr serve`. Only a
+    // *failure* is permanent for the process.
+    if (attempt.ok) this.failedKeys.delete(key);
+    else console.warn(`[${this.name}] auto-login failed: ${attempt.reason ?? "unknown reason"}`);
+    return attempt;
   }
 
   protected async newConversation(page: Page): Promise<void> {
@@ -266,12 +449,27 @@ export class WebLLMProvider extends BaseProvider {
   }
 
   protected flatten(messages: Message[]): string {
-    if (messages.length === 1) return messages[0].content;
-    return messages
-      .map((m) =>
-        `${m.role === "user" ? "User" : m.role === "assistant" ? "Assistant" : "System"}: ${m.content}`,
-      )
-      .join("\n\n");
+    if (messages.length === 1) {
+      const [m] = messages;
+      // A lone tool result still needs its block so the browser thread can
+      // associate it with the pending tool call.
+      if (m.role === "tool") return renderToolResult(m);
+      return m.content;
+    }
+    return messages.map((m) => this.flattenMessage(m)).join("\n\n");
+  }
+
+  protected flattenMessage(m: Message): string {
+    if (m.role === "tool") return renderToolResult(m);
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      // Re-render the tool_calls as <tool_call> blocks so a `newChat: true`
+      // replay of a tool loop is faithful.
+      const text = m.content ? `Assistant: ${m.content}` : null;
+      const blocks = renderToolCalls(m.tool_calls);
+      return text ? `${text}\n\n${blocks}` : blocks;
+    }
+    const label = m.role === "user" ? "User" : m.role === "assistant" ? "Assistant" : "System";
+    return `${label}: ${m.content}`;
   }
 }
 
