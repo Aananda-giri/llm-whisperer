@@ -6,3 +6,11 @@ profiles/
 *.log
 # Local scratch notes — not part of the project.
 todo
+# Human-written notes can contain plaintext credentials — never commit them.
+human-written/
+# Local Claude helper script may hardcode keys — never commit it.
+do-claude.sh
+# Encrypted credential vault (contains nothing readable, but never ship it).
+credentials.enc
+# Cached session health results.
+health.json

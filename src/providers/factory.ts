@@ -1,5 +1,6 @@
 import type { AppConfig } from "../config.js";
 import type { SessionPool } from "../session-pool.js";
+import type { Vault } from "../credentials/vault.js";
 import { WebLLMProvider, type LLMProvider } from "./base.js";
 import { ApiLLMProvider } from "./api.js";
 
@@ -18,6 +19,7 @@ const OVERRIDES: Record<
 export function buildProviders(
   config: AppConfig,
   pool: SessionPool,
+  vault?: Vault,
 ): Map<string, LLMProvider> {
   const providers = new Map<string, LLMProvider>();
   for (const [name, cfg] of Object.entries(config.providers)) {
@@ -26,7 +28,7 @@ export function buildProviders(
       continue;
     }
     const Cls = OVERRIDES[name] ?? WebLLMProvider;
-    providers.set(name, new Cls(name, cfg, pool));
+    providers.set(name, new Cls(name, cfg, pool, vault));
   }
   return providers;
 }

@@ -29,6 +29,34 @@ export interface ApiProviderConfig {
   keyEnv: string;
 }
 
+/**
+ * Declarative login rules for a browser provider. Lives beside `loggedOutSelector`
+ * in providers.yaml — no per-platform code. `method: "password"` is fully
+ * automatic; `method: "manual"` holds the email only and hands the window to
+ * the human (Claude's magic link, any Google OAuth).
+ */
+export interface LoginConfig {
+  /** `password` = automatic; `manual` = autofill email, then hand off. */
+  method: "password" | "manual";
+  /** Optional: click this to open the login form before filling. */
+  trigger?: string;
+  /** Selector of the email/username input. Required for both methods. */
+  emailSelector: string;
+  /** Selector of the password input. Required when `method: "password"`. */
+  passwordSelector?: string;
+  /** Optional: two-step flow — click continue between email and password. */
+  continueSelector?: string;
+  /** Selector of the submit button. Required when `method: "password"`. */
+  submitSelector?: string;
+  /**
+   * Wait target after submitting. Defaults to the provider's `inputSelector`
+   * (the chat surface) — the thing {@link isLoggedIn} already looks for.
+   */
+  successSelector?: string;
+  /** Max time to wait for `successSelector`/login to settle (ms). Default 60 s. */
+  timeoutMs?: number;
+}
+
 export interface ProviderConfig {
   url: string;
   requiresLogin: boolean;
@@ -52,10 +80,18 @@ export interface ProviderConfig {
   profile?: string;
   /** Present ⇒ this is an API-key provider, not a browser one. */
   api?: ApiProviderConfig;
+  /** Present ⇒ the provider supports declarative auto-login (see {@link LoginConfig}). */
+  login?: LoginConfig;
 }
 
 export interface AppConfig {
   port: number;
+  /**
+   * Host the HTTP server binds to. Defaults to 127.0.0.1 (loopback only).
+   * Set WSPR_HOST to 0.0.0.0 to expose it — the credentials UI then needs a
+   * strong WSPR_UI_TOKEN because it is reachable from the network.
+   */
+  host: string;
   profilesDir: string;
   headless: boolean;
   /**
@@ -101,6 +137,28 @@ const KNOWN_BROWSER_CHANNELS = new Set([
   "msedge-dev",
   "msedge-canary",
 ]);
+
+/**
+ * Validate a declarative `login:` block. `method` is required and must be
+ * `password` or `manual`. `emailSelector` is always required. A `password`
+ * provider must also declare `passwordSelector` and `submitSelector`.
+ */
+function validateLoginBlock(name: string, login: LoginConfig): void {
+  if (login.method !== "password" && login.method !== "manual") {
+    throw new Error(
+      `Provider "${name}": login.method must be "password" or "manual" (got "${login.method}").`,
+    );
+  }
+  if (!login.emailSelector) {
+    throw new Error(`Provider "${name}": login block with method "${login.method}" is missing emailSelector.`);
+  }
+  if (login.method === "password" && !login.passwordSelector) {
+    throw new Error(`Provider "${name}": login method "password" requires passwordSelector.`);
+  }
+  if (login.method === "password" && !login.submitSelector) {
+    throw new Error(`Provider "${name}": login method "password" requires submitSelector.`);
+  }
+}
 
 /**
  * Resolve the browser channel: WSPR_BROWSER_CHANNEL wins. Legacy `BROWSER` is
@@ -175,6 +233,9 @@ export function loadConfig(file?: string): AppConfig {
       } catch (e) {
         throw new Error(`Provider "${name}": ${(e as Error).message}`);
       }
+      if (cfg.login) {
+        validateLoginBlock(name, cfg.login);
+      }
     }
     providers[name] = {
       // Defaults so browser-typed fields are always present; API providers
@@ -194,6 +255,9 @@ export function loadConfig(file?: string): AppConfig {
   return {
     // 9777 = "WSPR" on a phone keypad; avoids the crowded 3000/5000/8000 range. See docs/configuration.md.
     port: Number(process.env.PORT ?? 9777),
+    // Bind to loopback only by default so the server (and its credentials UI)
+    // is not reachable from the LAN. Set WSPR_HOST=0.0.0.0 to expose it.
+    host: process.env.WSPR_HOST?.trim() || "127.0.0.1",
     profilesDir: process.env.PROFILES_DIR ?? defaultProfilesDir,
     headless: (process.env.HEADLESS ?? "false").toLowerCase() !== "false",
     // Unset ⇒ bundled Chromium. See resolveBrowserChannel() for the legacy

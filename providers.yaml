@@ -44,6 +44,14 @@ providers:
       "qwen2.5-max":   ""
       "qwen2.5-plus":  ""
       "qwen2.5-coder": ""
+    # Declarative auto-login (email/password). Keep in sync with the live form —
+    # if the DOM shifts, run `wspr login qwen` with HEADLESS and fix selectors.
+    login:
+      method: password
+      trigger: "button:has-text('Log in')"
+      emailSelector: "input[type=email], input[name=email]"
+      passwordSelector: "input[type=password]"
+      submitSelector: "button[type=submit]"
 
   # ── DeepSeek ────────────────────────────────────────────────────────────────
   deepseek:
@@ -99,6 +107,11 @@ providers:
       "claude-sonnet": ""
       "claude-haiku":  ""
       "claude-opus":   ""
+    # Claude logs in via an emailed magic link — no password. Auto-login fills
+    # the email only, then hands the tab to you.
+    login:
+      method: manual
+      emailSelector: "input[type=email], input[name=email]"
 
   # ── GLM (Zhipu AI) ──────────────────────────────────────────────────────────
   glm:
