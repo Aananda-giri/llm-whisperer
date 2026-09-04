@@ -182,14 +182,31 @@ base64) or a publicly reachable `https://` URL. Browser providers are text-only.
 }
 ```
 
-> Token counts are always `0` — these are browser sessions, not metered APIs,
-> so there is no real token accounting.
+> Token counts are **real for API-key providers** (parsed from the upstream
+> stream's trailing `usage` chunk) and `0` for browser-driven providers — those
+> are browser sessions, not metered APIs, so there is no real token accounting.
+> The streamed `finish_reason` reflects the upstream's own value (`"length"` on
+> truncation) where the provider reports one; browser providers always say
+> `"stop"`.
+>
+> **Caveat:** real usage relies on the upstream supporting the OpenAI
+> `stream_options: { include_usage: true }` request field. Most OpenAI-compatible
+> providers do (Groq, OpenRouter, Together, Cerebras, …), but one that rejects
+> unknown params could error on it. If you hit that, the provider needs
+> `stream_options` dropped or made opt-in per provider; `finish_reason` still
+> propagates and `usage` simply reads as zeros.
 
 ### Streaming (`stream: true`)
 
 Returns `text/event-stream`. Chunks follow the OpenAI `chat.completion.chunk`
 format: an opening chunk with `delta.role`, content chunks with `delta.content`
-as the LLM types, a final chunk with `finish_reason: "stop"`, then `data: [DONE]`.
+as the LLM types, a final chunk carrying `finish_reason`, then `data: [DONE]`.
+
+`finish_reason` is the API-key provider's own value, so `"length"` really means
+the answer was truncated by `max_tokens` and `"tool_calls"` that tools were
+requested. Browser providers have no such signal and always report `"stop"`.
+The Anthropic endpoint maps the same value onto `stop_reason` (`"length"` ⇒
+`"max_tokens"`).
 
 ```bash
 curl -N http://localhost:9777/v1/chat/completions \
@@ -506,8 +523,11 @@ providers: a `tool_use` block on an assistant turn becomes `tool_calls`, and a
 }
 ```
 
-> Token counts are always `0` — these are proxied/browser sessions, so there is
-> no real token accounting.
+> Token counts are **real for API-key providers** (upstream `prompt_tokens` /
+> `completion_tokens` mapped to `input_tokens` / `output_tokens`) and `0` for
+> browser-driven providers, which have no metering. `stop_reason` reflects the
+> upstream's own value where reported (`"max_tokens"` on truncation); browser
+> providers always say `"end_turn"`.
 
 ### Streaming (`stream: true`)
 

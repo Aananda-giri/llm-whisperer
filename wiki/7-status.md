@@ -47,8 +47,8 @@ have them.
 | Sampling params (`temperature`, `max_tokens`, …) | Implemented | Forwarded to API-key providers via `ChatOptions.params`; browser providers ignore them | [§4.1](./4-api-key-providers/4.1-one-class-many-services.md) |
 | Tool calling | Implemented — both doors | Browser providers simulate it by prompting (`tool-protocol.ts`); API-key providers forward `tools` natively (`openai-tools.ts`) | [§3.1](./3-api/3.1-three-dialects.md) |
 | Client-config emitter (`wspr config <client>`) | Implemented | `src/clients.ts` registry: opencode, openai, anthropic, continue | [§3.2](./3-api/3.2-choosing-a-model.md) |
-| Real token counts in `usage` | Planned | Hard-coded `0`; upstream's real numbers are parsed and discarded | [§3.1](./3-api/3.1-three-dialects.md) |
-| Accurate `finish_reason` / `stop_reason` | Planned | Always `"stop"` / `"end_turn"`, including on truncation | [§5.2](./5-browser-providers/5.2-knowing-when-it-stopped.md) |
+| Real token counts in `usage` | Partial — API-key providers | Upstream `usage` parsed from the stream and carried on the `finish` event; browser providers still report `0` | [§3.1](./3-api/3.1-three-dialects.md) |
+| Accurate `finish_reason` / `stop_reason` | Partial | API-key providers report upstream's own value (`"length"` ⇒ `"max_tokens"`) via the `finish` stream event; browser providers still always say `"stop"` / `"end_turn"` | [§5.2](./5-browser-providers/5.2-knowing-when-it-stopped.md) |
 | Model ids containing `/` | Implemented | `resolveModel` splits on the first `/`; slashed OpenRouter and `@cf/…` ids reach upstream | [§3.2](./3-api/3.2-choosing-a-model.md) |
 | Streaming errors return 200 | Planned — defect | Headers already flushed; the OpenAI error chunk has no `[DONE]` | [§3.3](./3-api/3.3-streaming.md) |
 | Bind to `127.0.0.1` by default | Implemented | `app.listen(port, config.host)`; `WSPR_HOST` overrides | [§3.4](./3-api/3.4-embeddings-and-auth.md) |

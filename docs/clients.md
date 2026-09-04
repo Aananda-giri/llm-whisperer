@@ -11,10 +11,12 @@ wspr config               # list the registered clients
 wspr config opencode email1 --out opencode.json --base-url http://localhost:9777
 ```
 
-`--out` writes to a file (each target has a default filename); without it the
-config is printed. `--base-url` overrides the server root (defaults to
-`http://localhost:PORT`). Profile defaults to the server's default browser
-profile.
+The config is **printed to stdout** — a client's config file is usually
+hand-maintained (`opencode.json` also holds your agents, MCP servers and
+keybinds), so nothing is written unless you ask. Pass `--out <file>` to write
+one, which overwrites that path. `--base-url` overrides the server root
+(defaults to `http://localhost:PORT`). Profile defaults to the server's default
+browser profile.
 
 Every emitted base URL is **profile-scoped**: `/p/<profile>/v1` for OpenAI
 dialects, `/p/<profile>` for Anthropic (the SDK appends `/v1/messages`).
