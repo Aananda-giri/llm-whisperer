@@ -84,6 +84,25 @@ export interface ProviderConfig {
   login?: LoginConfig;
 }
 
+/**
+ * A named API scope. A profile has two independent halves:
+ * - a browser identity (the Chromium user-data dir + vault key, e.g. "email1"),
+ *   which reuses the existing {@link validateBrowserProfile} name rules; and
+ * - a declared provider/model set, which is what a client scoped to this
+ *   profile is allowed to see and use.
+ *
+ * A profile that is *undeclared* in the `profiles:` block is still valid — it
+ * simply exposes every provider (the historical bare `/v1/*` behaviour) while
+ * scoping browser sessions to that name. No `profiles:` block ⇒ nothing changes
+ * for existing users.
+ */
+export interface ProfileConfig {
+  /** Optional human-readable label, used by client-config emitters. */
+  label?: string;
+  /** Provider key → exposed model ids, or `"*"` for every model wspr knows. */
+  providers: Record<string, string[] | "*">;
+}
+
 export interface AppConfig {
   port: number;
   /**
@@ -94,6 +113,11 @@ export interface AppConfig {
   host: string;
   profilesDir: string;
   headless: boolean;
+  /**
+   * Declared, provider-scoped API profiles (the `profiles:` block in
+   * providers.yaml). Absent ⇒ every undeclared profile exposes every provider.
+   */
+  profiles: Record<string, ProfileConfig>;
   /**
    * Playwright browser channel to launch (e.g. "chrome", "msedge", "chrome-beta").
    * Undefined ⇒ Playwright's bundled Chromium (the zero-config default for the
@@ -161,6 +185,69 @@ function validateLoginBlock(name: string, login: LoginConfig): void {
 }
 
 /**
+ * Validate and normalize the `profiles:` block, after every provider has been
+ * materialized so the provider-name and browser-models checks can see it.
+ *
+ * Rules:
+ * - the profile name passes the same charset as its browser directory;
+ * - every provider key must exist in `config.providers` (names the typo);
+ * - for a browser provider, every listed model must be a key of that provider's
+ *   `models:` map — cheap typo protection, since those keys already exist;
+ * - for an API provider any model id is allowed (ids are passed upstream
+ *   verbatim).
+ */
+function parseProfiles(
+  rawProfiles: Partial<Record<string, Partial<ProfileConfig>>> | undefined,
+  providers: Record<string, ProviderConfig>,
+): Record<string, ProfileConfig> {
+  if (!rawProfiles || typeof rawProfiles !== "object") return {};
+
+  const out: Record<string, ProfileConfig> = {};
+  for (const [name, prof] of Object.entries(rawProfiles)) {
+    if (!prof || typeof prof.providers !== "object") {
+      throw new Error(`Profile "${name}": the "providers" map is required.`);
+    }
+    validateBrowserProfile(name);
+    const result: ProfileConfig = { label: prof.label, providers: {} };
+    for (const [providerKey, list] of Object.entries(prof.providers)) {
+      const cfg = providers[providerKey];
+      if (!cfg) {
+        throw new Error(
+          `Profile "${name}": unknown provider "${providerKey}". ` +
+            `Available: ${Object.keys(providers).join(", ")}`,
+        );
+      }
+      if (list === "*") {
+        result.providers[providerKey] = "*";
+        continue;
+      }
+      if (!Array.isArray(list)) {
+        throw new Error(
+          `Profile "${name}" provider "${providerKey}": expected a list of model ids or "*".`,
+        );
+      }
+      if (cfg.api) {
+        // Any id is forwarded upstream verbatim; just accept the list.
+        result.providers[providerKey] = [...list];
+        continue;
+      }
+      const known = new Set(Object.keys(cfg.models ?? {}));
+      for (const modelId of list) {
+        if (!known.has(modelId)) {
+          throw new Error(
+            `Profile "${name}" provider "${providerKey}": unknown model "${modelId}". ` +
+              `Available: ${[...known].join(", ") || "(none)"}`,
+          );
+        }
+      }
+      result.providers[providerKey] = [...list];
+    }
+    out[name] = result;
+  }
+  return out;
+}
+
+/**
  * Resolve the browser channel: WSPR_BROWSER_CHANNEL wins. Legacy `BROWSER` is
  * used only when it names a known Playwright channel, so desktop `BROWSER`
  * commands (xdg-open, …) never break launching.
@@ -200,6 +287,7 @@ export function loadConfig(file?: string): AppConfig {
   const configFile = findProvidersFile(file);
   const raw = yaml.load(readFileSync(configFile, "utf-8")) as {
     providers?: Record<string, Partial<ProviderConfig>>;
+    profiles?: Record<string, Partial<ProfileConfig>>;
   };
 
   if (!raw?.providers || typeof raw.providers !== "object") {
@@ -252,6 +340,10 @@ export function loadConfig(file?: string): AppConfig {
 
   const defaultProfilesDir = join(homedir(), ".config", "llm-whisperer", "profiles");
 
+  // Profiles are validated only after every provider is materialized above, so
+  // the provider-name check and the browser-models check can see the real map.
+  const profiles = parseProfiles(raw.profiles, providers);
+
   return {
     // 9777 = "WSPR" on a phone keypad; avoids the crowded 3000/5000/8000 range. See docs/configuration.md.
     port: Number(process.env.PORT ?? 9777),
@@ -259,6 +351,7 @@ export function loadConfig(file?: string): AppConfig {
     // is not reachable from the LAN. Set WSPR_HOST=0.0.0.0 to expose it.
     host: process.env.WSPR_HOST?.trim() || "127.0.0.1",
     profilesDir: process.env.PROFILES_DIR ?? defaultProfilesDir,
+    profiles,
     headless: (process.env.HEADLESS ?? "false").toLowerCase() !== "false",
     // Unset ⇒ bundled Chromium. See resolveBrowserChannel() for the legacy
     // BROWSER fallback and its channel allowlist.

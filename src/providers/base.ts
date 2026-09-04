@@ -54,6 +54,13 @@ export interface ChatOptions {
   tools?: ToolDefinition[];
   /** Normalized tool selection directive (OpenAI/Anthropic shapes are mapped upstream). */
   toolChoice?: ToolChoice;
+  /**
+   * Extra sampling parameters (temperature, max_tokens, top_p, stop, seed,
+   * response_format, …). Forwarded verbatim to HTTP API providers in the
+   * request body; browser providers ignore them (the web UI path has no such
+   * controls).
+   */
+  params?: Record<string, unknown>;
 }
 
 /**

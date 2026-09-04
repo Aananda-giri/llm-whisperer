@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import "dotenv/config";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { DEFAULT_BROWSER_PROFILE, validateBrowserProfile, BrowserManager } from "./browser.js";
+import { listModels, listProfiles } from "./models.js";
+import { CLIENT_TARGETS, clientTargets } from "./clients.js";
 import { SessionPool } from "./session-pool.js";
 import { createServer } from "./server.js";
 import {
@@ -73,6 +75,10 @@ Usage:
   wspr creds list [profile]   List stored credentials (password never shown)
   wspr creds show <name> [profile]  The only way to read a password back
   wspr creds rm <name> [profile]    Remove a stored credential
+  wspr profiles             List declared + discovered API profiles
+  wspr models [profile]     List the models a profile exposes
+  wspr config <client> [profile]   Emit a client config for opencode, openai,
+                              anthropic, or continue (--out <file>, --base-url <url>)
 
 Environment:
   PORT                 API port (default 9777)
@@ -104,6 +110,12 @@ Environment:
       return creds(config, rest);
     case "status":
       return status(config, rest);
+    case "profiles":
+      return profilesCmd(config);
+    case "models":
+      return modelsCmd(config, rest);
+    case "config":
+      return configCmd(config, rest);
     default:
       console.error(`Unknown command: ${command}. Run wspr --help.`);
       process.exit(1);
@@ -529,6 +541,114 @@ async function creds(config: ReturnType<typeof loadConfig>, args: string[]) {
   console.log(`method:   ${cred.method}`);
   console.log(`updated:  ${cred.updatedAt}`);
   console.log(`password: ${cred.password ?? "(none — manual login)"}`);
+}
+
+/** Split a rest array into positional values and `--flag`/`--flag value` pairs. */
+function parseFlags(args: string[]): { values: string[]; flags: Record<string, string | true> } {
+  const values: string[] = [];
+  const flags: Record<string, string | true> = {};
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith("--")) {
+      const key = a.slice(2);
+      const next = args[i + 1];
+      if (next && !next.startsWith("--")) {
+        flags[key] = next;
+        i++;
+      } else {
+        flags[key] = true;
+      }
+    } else {
+      values.push(a);
+    }
+  }
+  return { values, flags };
+}
+
+/** Profiles declared in config, discovered on disk, plus the default. */
+function discoverProfiles(config: ReturnType<typeof loadConfig>): string[] {
+  const names = new Set(listProfiles(config));
+  const dir = join(config.profilesDir, "browser-profiles");
+  if (existsSync(dir)) {
+    for (const entry of readdirSync(dir)) {
+      try {
+        names.add(validateBrowserProfile(entry));
+      } catch {
+        // Skip stray files/dirs with invalid profile names.
+      }
+    }
+  }
+  names.add(DEFAULT_BROWSER_PROFILE);
+  return [...names];
+}
+
+async function profilesCmd(config: ReturnType<typeof loadConfig>): Promise<void> {
+  const pad = (v: string, n: number) => v.padEnd(n);
+  const names = discoverProfiles(config);
+  if (names.length === 0) {
+    console.log("No profiles found.");
+    return;
+  }
+  console.log(`${pad("Profile", 16)}${pad("Declared", 10)}${pad("Providers", 10)}${pad("Models", 8)}Label`);
+  for (const name of names) {
+    const declared = !!config.profiles?.[name];
+    const entries = listModels(config, name);
+    const providers = new Set(entries.filter((e) => e.model === undefined).map((e) => e.provider));
+    const modelCount = entries.filter((e) => e.model !== undefined).length;
+    console.log(
+      `${pad(name, 16)}${pad(declared ? "yes" : "no", 10)}${pad(String(providers.size), 10)}${pad(String(modelCount), 8)}${config.profiles?.[name]?.label ?? ""}`,
+    );
+  }
+}
+
+function modelsCmd(config: ReturnType<typeof loadConfig>, args: string[]): void {
+  const profile = args[0] ? validateBrowserProfile(args[0]) : undefined;
+  const entries = listModels(config, profile);
+  if (entries.length === 0) {
+    console.log("No models.");
+    return;
+  }
+  const pad = (v: string, n: number) => v.padEnd(n);
+  console.log(`${pad("Model", 34)}${pad("Kind", 10)}Provider`);
+  for (const e of entries) {
+    const extra = e.model === undefined ? "(provider default)" : `default: ${e.model}`;
+    console.log(`${pad(e.id, 34)}${pad(e.kind, 10)}${e.provider}  ${extra}`);
+  }
+}
+
+function configCmd(config: ReturnType<typeof loadConfig>, args: string[]): void {
+  const { values, flags } = parseFlags(args);
+  const client = values[0];
+  if (!client) {
+    console.log("Client targets:\n");
+    for (const t of clientTargets()) {
+      console.log(`  ${t.id.padEnd(12)} ${t.label}`);
+    }
+    console.log("\nUsage: wspr config <client> [profile] [--out <file>] [--base-url <url>]");
+    return;
+  }
+  const target = CLIENT_TARGETS[client];
+  if (!target) {
+    console.error(`Unknown client "${client}". Available: ${clientTargets().map((t) => t.id).join(", ")}`);
+    process.exit(1);
+  }
+
+  const profile = validateBrowserProfile(values[1] ?? config.browserProfile);
+  const host = config.host === "127.0.0.1" ? "localhost" : config.host;
+  const baseUrl = typeof flags["base-url"] === "string" ? flags["base-url"] : `http://${host}:${config.port}`;
+  const label = config.profiles?.[profile]?.label ?? profile;
+  const ctx = { profile, baseUrl, models: listModels(config, profile), label };
+  const out = target.emit(ctx);
+
+  const outFile = typeof flags["out"] === "string" ? flags["out"] : target.file;
+  if (outFile) {
+    const path = resolve(outFile);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, out);
+    console.log(`Wrote ${basename(path)} (profile "${profile}", ${ctx.models.length} model(s)).`);
+  } else {
+    console.log(out);
+  }
 }
 
 main().catch((err) => {

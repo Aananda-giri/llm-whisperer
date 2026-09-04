@@ -24,6 +24,43 @@ import {
   type ToolDefinition,
 } from "./providers/tool-protocol.js";
 import { ApiKeyMissingError } from "./providers/api.js";
+import { listModels, resolveModel } from "./models.js";
+import { toOpenAIWire } from "./providers/openai-tools.js";
+
+declare global {
+  namespace Express {
+    interface Request {
+      /** The active API profile, stashed by the mount middleware. */
+      wsprProfile?: string;
+    }
+  }
+}
+
+/** Build the sampling-params object for a route, dropping unset fields. */
+function buildParams(src: Record<string, unknown>): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(src)) {
+    if (v !== undefined && v !== null) out[k] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Middleware factory: pin the shared router to the server's default profile. */
+function setProfileMiddleware(profile: string): express.RequestHandler {
+  return (req, _res, next) => {
+    req.wsprProfile = profile;
+    next();
+  };
+}
+
+/**
+ * Middleware for the `/p/:profile` mount. Express 4 exposes the mount-path
+ * param here, so we stash it on `req` and the shared router needs no mergeParams.
+ */
+const setProfileFromPath: express.RequestHandler = (req, _res, next) => {
+  req.wsprProfile = validateBrowserProfile(String(req.params.profile));
+  next();
+};
 
 /**
  * Flatten an Anthropic content value (a string, or an array of content blocks)
@@ -142,7 +179,7 @@ function openaiContentToText(content: unknown): string {
 }
 
 /** Map OpenAI `tools` to internal {@link ToolDefinition}s (function shape). */
-function openaiToolsToDefs(tools: any): ToolDefinition[] {
+export function openaiToolsToDefs(tools: any): ToolDefinition[] {
   if (!Array.isArray(tools)) return [];
   const defs: ToolDefinition[] = [];
   for (const t of tools) {
@@ -154,7 +191,7 @@ function openaiToolsToDefs(tools: any): ToolDefinition[] {
 }
 
 /** Map OpenAI `tool_choice` to the internal normalized directive. */
-function openaiToolChoiceToInternal(toolChoice: any): ToolChoice {
+export function openaiToolChoiceToInternal(toolChoice: any): ToolChoice {
   if (!toolChoice || toolChoice === "auto") return "auto";
   if (toolChoice === "none" || toolChoice === "required") return toolChoice;
   if (toolChoice.name) return { name: toolChoice.name };
@@ -248,17 +285,36 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
     next();
   };
 
+  // ── shared router ────────────────────────────────────────────────────────
+  // All data routes live on one router so they can be mounted both bare
+  // (`/v1/*` → the default profile) and under a profile prefix (`/p/email1/v1/*`).
+  // The mount middleware stashes `req.wsprProfile`; the router never reads the
+  // URL, so it needs no mergeParams.
+
+  const api = express.Router();
+
   // ── original endpoint ────────────────────────────────────────────────────
 
-  app.get("/health", (_req, res) => {
-    res.json({ ok: true, providers: [...providers.keys()] });
+  api.get("/health", (req, res) => {
+    // The provider list is scoped to the active profile.
+    const scoped = listModels(config, req.wsprProfile).filter((e) => e.model === undefined);
+    res.json({ ok: true, providers: [...new Set(scoped.map((e) => e.provider))] });
   });
 
-  app.post("/chat", requireApiKeySimple, async (req, res) => {
+  api.post("/chat", requireApiKeySimple, async (req, res) => {
     const { provider, messages, model, newChat, profile } = req.body ?? {};
-    // `provider` selects the browser session; `model` switches within it.
-    const target = provider ?? model?.split("/")[0];
-    const modelName = model?.includes("/") ? model.split("/")[1] : undefined;
+    // `provider` selects the browser session; `model` switches within it. A
+    // bare model ("qwen") or `provider/model` both resolve through resolveModel,
+    // so profile scoping and the first-slash split apply here too.
+    const effectiveModel = provider && model && !model.includes("/")
+      ? `${provider}/${model}`
+      : (model || provider);
+    const resolved = effectiveModel ? resolveModel(config, req.wsprProfile, effectiveModel) : { error: "A provider or model is required." };
+    if ("error" in resolved) {
+      res.status(400).json({ error: resolved.error });
+      return;
+    }
+    const target = resolved.provider;
     const llm = providers.get(target);
 
     if (!llm) {
@@ -273,7 +329,11 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
     }
 
     try {
-      const content = await llm.chat(messages as Message[], { newChat, model: modelName, profile });
+      const content = await llm.chat(messages as Message[], {
+        newChat,
+        model: resolved.model,
+        profile: profile ?? req.wsprProfile,
+      });
       res.json({ provider: target, message: { role: "assistant", content } });
     } catch (err) {
       if (err instanceof LoginRequiredError || err instanceof ApiKeyMissingError) {
@@ -287,23 +347,51 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
 
   // ── OpenAI-compatible endpoints ──────────────────────────────────────────
 
-  app.get("/v1/models", requireApiKey, (_req, res) => {
+  api.get("/v1/models", requireApiKey, (req, res) => {
     const created = Math.floor(Date.now() / 1000);
+    const entries = listModels(config, req.wsprProfile);
     res.json({
       object: "list",
-      data: [...providers.keys()].map((id) => ({
-        id,
+      data: entries.map((e) => ({
+        id: e.id,
         object: "model",
         created,
         owned_by: "llm-whisperer",
+        // Extra, ignorable metadata so clients can show the kind/label.
+        wspr: {
+          provider: e.provider,
+          model: e.model ?? null,
+          kind: e.kind,
+          label: e.label,
+          profile: req.wsprProfile ?? null,
+        },
       })),
     });
   });
 
-  app.post("/v1/chat/completions", requireApiKey, async (req, res) => {
-    const { model, messages, stream = false, newChat, profile, tools, tool_choice } = req.body ?? {};
-    // model field: "qwen" selects the provider; "qwen/qwen2.5-max" also switches model.
-    const [providerKey, modelName] = (model as string ?? "").split("/");
+  api.post("/v1/chat/completions", requireApiKey, async (req, res) => {
+    const {
+      model,
+      messages,
+      stream = false,
+      newChat,
+      profile,
+      tools,
+      tool_choice,
+      temperature,
+      max_tokens,
+      top_p,
+      stop,
+      seed,
+      response_format,
+    } = req.body ?? {};
+    // model field: "qwen" selects the provider; "qwen/qwen2.5-max" also switches.
+    const resolved = resolveModel(config, req.wsprProfile, model ?? "");
+    if ("error" in resolved) {
+      res.status(400).json({ error: { message: resolved.error, type: "invalid_request_error" } });
+      return;
+    }
+    const { provider: providerKey, model: modelName } = resolved;
     const llm = providers.get(providerKey);
 
     if (!llm) {
@@ -325,29 +413,24 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
     const id = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
 
-    // Tool calling is simulated only for browser-driven providers. API-key
-    // providers would get real native tool calling upstream, but wspr does not
-    // forward `tools` yet — so warn and proceed as today.
+    // Tools are honoured by both doors: browser providers simulate them by
+    // prompting, API-key providers get real native passthrough upstream.
     const toolDefs = openaiToolsToDefs(tools);
     const useTools = toolDefs.length > 0;
-    const isBrowser = supportsTools(llm);
-    if (useTools && !isBrowser) {
-      console.warn(
-        `[${providerKey}] tools are ignored for API-key providers (only browser ` +
-          `providers simulate tool calling at this time).`,
-      );
-    }
+    const isApi = !!config.providers[providerKey]?.api;
+    const withTools = useTools && supportsTools(llm);
 
     // Browser providers get normalized messages (fixes the `[object Object]`
     // content-array bug and carries tool_calls/tool role through). API-key
     // providers keep the original array so vision parts reach upstream intact.
-    const internal = isBrowser ? openaiToMessages(messages) : (messages as Message[]);
+    const internal = isApi ? (messages as Message[]) : openaiToMessages(messages);
     const opts: ChatOptions = {
       newChat,
       model: modelName,
-      profile,
+      profile: profile ?? req.wsprProfile,
       tools: toolDefs,
       toolChoice: openaiToolChoiceToInternal(tool_choice),
+      params: buildParams({ temperature, max_tokens, top_p, stop, seed, response_format }),
     };
 
     if (stream) {
@@ -372,7 +455,7 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
 
       try {
         send({ role: "assistant" });            // opening chunk — role only
-        if (useTools && isBrowser) {
+        if (withTools) {
           let toolIndex = 0;
           let toolCalled = false;
           for await (const ev of llm.streamWithTools(internal, opts)) {
@@ -409,7 +492,7 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
     }
 
     try {
-      const text = await collectText(llm, internal, opts, useTools && isBrowser);
+      const text = await collectText(llm, internal, opts, withTools);
       if (text.toolCalls?.length) {
         res.json({
           id,
@@ -453,11 +536,16 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
     }
   });
 
-  app.post("/v1/embeddings", requireApiKey, async (req, res) => {
+  api.post("/v1/embeddings", requireApiKey, async (req, res) => {
     const { model, input } = req.body ?? {};
     // model field: "digitalocean" uses the provider's default embedModel;
     // "digitalocean/bge-m3" also picks the embedding model.
-    const [providerKey, modelName] = (model as string ?? "").split("/");
+    const resolved = resolveModel(config, req.wsprProfile, model ?? "");
+    if ("error" in resolved) {
+      res.status(400).json({ error: { message: resolved.error, type: "invalid_request_error" } });
+      return;
+    }
+    const { provider: providerKey, model: modelName } = resolved;
     const llm = providers.get(providerKey);
 
     if (!llm) {
@@ -505,10 +593,31 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
   // base URL here. `model` selects the provider exactly like the other routes:
   // "qwen" picks the provider, "qwen/qwen2.5-max" also switches the model.
 
-  app.post("/v1/messages", requireApiKey, async (req, res) => {
-    const { model, messages, system, stream = false, newChat, profile, tools, tool_choice } =
-      req.body ?? {};
-    const [providerKey, modelName] = (model as string ?? "").split("/");
+  api.post("/v1/messages", requireApiKey, async (req, res) => {
+    const {
+      model,
+      messages,
+      system,
+      stream = false,
+      newChat,
+      profile,
+      tools,
+      tool_choice,
+      max_tokens,
+      temperature,
+      top_p,
+      stop_sequences,
+      seed,
+    } = req.body ?? {};
+    const resolved = resolveModel(config, req.wsprProfile, model ?? "");
+    if ("error" in resolved) {
+      res.status(400).json({
+        type: "error",
+        error: { type: "invalid_request_error", message: resolved.error },
+      });
+      return;
+    }
+    const { provider: providerKey, model: modelName } = resolved;
     const llm = providers.get(providerKey);
 
     if (!llm) {
@@ -529,27 +638,24 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
       return;
     }
 
-    // Tool calling is simulated only for browser-driven providers. API-key
-    // providers keep flattening tools away (they would need native passthrough).
+    // Tools are honoured on both doors. Browser providers preserve the tool
+    // blocks; API-key providers are re-shaped into OpenAI wire form so their
+    // native passthrough receives a complete tool loop.
     const toolDefs = anthropicToolsToDefs(tools);
     const useTools = toolDefs.length > 0;
-    const isBrowser = supportsTools(llm);
-    if (useTools && !isBrowser) {
-      console.warn(
-        `[${providerKey}] tools are ignored for API-key providers (only browser ` +
-          `providers simulate tool calling at this time).`,
-      );
-    }
+    const isApi = !!config.providers[providerKey]?.api;
+    const withTools = useTools && supportsTools(llm);
 
-    // Browser providers preserve tool blocks (tool_use ⇒ tool_calls,
-    // tool_result ⇒ role:"tool"); API-key providers flatten them away.
-    const internal = anthropicToMessages(system, messages, isBrowser);
+    const internal = isApi
+      ? toOpenAIWire(anthropicToMessages(system, messages, useTools))
+      : anthropicToMessages(system, messages, true);
     const opts: ChatOptions = {
       newChat,
       model: modelName,
-      profile,
+      profile: profile ?? req.wsprProfile,
       tools: toolDefs,
       toolChoice: anthropicToolChoiceToInternal(tool_choice),
+      params: buildParams({ max_tokens, temperature, top_p, stop: stop_sequences, seed }),
     };
     const id = `msg_${Date.now()}`;
 
@@ -591,7 +697,7 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
           },
         });
 
-        if (useTools && isBrowser) {
+        if (withTools) {
           let blockIndex = -1;
           let textOpen = false;
           let toolCalled = false;
@@ -645,7 +751,7 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
     }
 
     try {
-      const out = await collectText(llm, internal, opts, useTools && isBrowser);
+      const out = await collectText(llm, internal, opts, withTools);
       const content: unknown[] = [];
       if (out.text) content.push({ type: "text", text: out.text });
       for (const c of out.toolCalls) {
@@ -677,6 +783,12 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
       res.status(500).json({ type: "error", error: { type: "api_error", message: (err as Error).message } });
     }
   });
+
+  // ── mount once bare and once under a profile prefix ──────────────────────
+  // Bare `/v1/*` and `/chat` use the server's default browser profile; the
+  // `/p/:profile` sister always overrides `req.wsprProfile` from the path.
+  app.use(setProfileMiddleware(config.browserProfile), api);
+  app.use("/p/:profile", setProfileFromPath, api);
 
   // ── credentials dashboard / UI ─────────────────────────────────────────────
   // This is the one place the vault's redacted view is exposed. All /ui routes
