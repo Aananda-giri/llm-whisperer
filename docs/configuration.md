@@ -128,6 +128,50 @@ or hyphens. Requests without a `profile` field keep working exactly as before.
 lazily on their first request. Named profiles are unavailable in **CDP mode** —
 start a separate `wspr serve` per CDP browser instead.
 
+### Profiles (API scope)
+
+A **profile** is a named API scope that builds on the browser identity above.
+It declares which providers and models a client on that profile may see and
+use. Selection is a URL path prefix, so it works with any client that only
+exposes a base URL + API key:
+
+```bash
+curl http://localhost:9777/v1/models          # default profile → every provider
+curl http://localhost:9777/p/email1/v1/models # email1 profile → only its set
+```
+
+Declare a profile in `providers.yaml`:
+
+```yaml
+profiles:
+  email1:
+    label: "Personal (email1)"       # optional; used by config emitters
+    providers:
+      qwen: [qwen3-235b, qwen2.5-max]
+      groq: "*"                      # every model wspr knows for this provider
+  work:
+    providers:
+      claude: [claude-sonnet]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `label` | string | Optional display name used by `wspr config` emitters |
+| `providers` | object | Provider key → a list of exposed model ids, or `"*"` for every model |
+
+Validation at load time:
+- the profile name uses the same charset as its browser directory;
+- the provider key must exist in `providers.yaml` (names the typo);
+- for a browser provider, every listed model must be a key of that provider's
+  `models:` map;
+- for an API provider any model id is allowed (it is passed upstream verbatim).
+
+A profile that is **not** declared (or no `profiles:` block at all) is still
+valid — it exposes every provider and scopes browser sessions to that name. So
+existing setups change nothing. An explicit `profile` field on a request still
+wins over the path prefix. See [api.md](./api.md#profiles) and
+[clients.md](./clients.md) for the how-to and the `wspr config` emitter.
+
 ### PROFILES_DIR
 
 Holds the browser data and one sentinel per logged-in provider×profile:

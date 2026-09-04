@@ -13,6 +13,10 @@ It offers two interfaces:
 - **`POST /v1/messages`** — Anthropic-compatible (Messages API), including
   streaming, so the `anthropic` SDK works by pointing its base URL here.
 
+Every data route above also works under a **profile prefix** — `POST /p/email1/v1/chat/completions`
+scopes the request (and the model catalog) to the `email1` profile. See
+[Profiles](#profiles).
+
 ## Authentication
 
 By default the API is **open** (no key required) — convenient for localhost.
@@ -214,6 +218,48 @@ for chunk in resp:
 
 ---
 
+## Profiles
+
+A **profile** is a named API scope. It combines the browser identity (the
+protocol you already use — see
+[configuration.md](./configuration.md#browser-profiles)) with a *declared* set
+of providers and models, so a client pointed at one profile sees exactly that
+set and nothing else.
+
+Selection is a URL path prefix — it works with **every** client unmodified,
+because clients only expose a base URL and an API key:
+
+```
+http://localhost:9777/v1              → the default browser profile ("default")
+http://localhost:9777/p/email1/v1     → the "email1" profile
+http://localhost:9777/p/work/v1       → the "work" profile
+```
+
+The path prefix scopes every data route — `/chat`, `/v1/models`,
+`/v1/chat/completions`, `/v1/embeddings`, `/v1/messages`, `/health`. The
+Anthropic base follows the same rule: `ANTHROPIC_BASE_URL=http://localhost:9777/p/email1`
+(the SDK appends `/v1/messages`).
+
+```yaml
+# providers.yaml
+profiles:
+  email1:
+    label: "Personal (email1)"
+    providers:
+      qwen: [qwen3-235b, qwen2.5-max]
+      groq: "*"          # every model wspr knows for this provider
+```
+
+A profile that is **not** declared is still valid — it simply exposes every
+provider (today's bare `/v1/*` behaviour) while scoping browser sessions to that
+name. An explicit `profile` field on a request still wins over the path.
+
+See [profiles in configuration.md](./configuration.md#profiles-api-scope) for the schema,
+and [clients.md](./clients.md) for the end-to-end walkthrough (opencode and
+friends).
+
+---
+
 ## Tool calling
 
 Both compatibility dialects accept `tools` / `tool_choice` (OpenAI) and `tools` /
@@ -232,10 +278,12 @@ Two things are worth knowing up front:
    `500`. The parser is deliberately lenient: it tolerates a wrapping Markdown
    code fence, smart quotes, zero-width characters and trailing commas, all of
    which chat UIs introduce when they re-render the model's output.
-2. **API-key providers still ignore `tools`.** For a provider with an `api:`
-   block, a request that carries `tools` logs one warning and proceeds as if the
-   tools were absent. They would need native passthrough upstream, which wspr
-   does not implement yet.
+2. **API-key providers forward `tools` natively.** A provider with an `api:`
+   block passes `tools` / `tool_choice` straight to the upstream API — real
+   native tool calling, not prompting — and folds the streamed
+   `delta.tool_calls` fragments back into a `tool_calls` response. Sampling
+   parameters (`temperature`, `max_tokens`, `top_p`, `stop`, `seed`,
+   `response_format`) are forwarded too.
 
 ### Example: OpenAI two-turn tool loop
 
@@ -305,20 +353,51 @@ no-op and whichever model is currently selected in the tab is used. See
 
 ## GET /v1/models
 
-OpenAI-compatible model list. Each configured provider is returned as a model.
+OpenAI-compatible model list, **scoped to the active profile**. Each configured
+provider is returned first as a bare alias (use the provider's default model),
+then one entry per exposed model as `provider/model`. A client pointed at
+`/p/email1/v1` sees only what the `email1` profile declares; a bare `/v1` sees
+every provider and every model it knows.
 
 ```bash
-curl http://localhost:9777/v1/models
+curl http://localhost:9777/v1/models            # every provider + model
+curl http://localhost:9777/p/email1/v1/models   # only what email1 exposes
 ```
 
 ```json
 {
   "object": "list",
   "data": [
-    { "id": "qwen", "object": "model", "created": 1718900000, "owned_by": "llm-whisperer" }
+    {
+      "id": "qwen",
+      "object": "model",
+      "created": 1718900000,
+      "owned_by": "llm-whisperer",
+      "wspr": { "provider": "qwen", "model": null, "kind": "browser", "label": "qwen", "profile": "email1" }
+    },
+    {
+      "id": "qwen/qwen3-235b",
+      "object": "model",
+      "created": 1718900000,
+      "owned_by": "llm-whisperer",
+      "wspr": { "provider": "qwen", "model": "qwen3-235b", "kind": "browser", "label": "qwen3-235b", "profile": "email1" }
+    },
+    {
+      "id": "groq/llama-3.3-70b-versatile",
+      "object": "model",
+      "created": 1718900000,
+      "owned_by": "llm-whisperer",
+      "wspr": { "provider": "groq", "model": "llama-3.3-70b-versatile", "kind": "api", "label": "llama-3.3-70b-versatile", "profile": "email1" }
+    }
   ]
 }
 ```
+
+The `wspr` field is extra metadata clients may ignore. `model: null` means the
+bare provider alias. Slashed model ids survive intact here (OpenRouter
+`openrouter/openai/gpt-oss-120b:free`, Cloudflare
+`cloudflare/@cf/meta/llama-3.1-8b-instruct`), because the catalog splits on the
+*first* `/` only.
 
 ---
 
@@ -471,10 +550,12 @@ Errors use the Anthropic shape `{"type": "error", "error": {"type": ..., "messag
 
 ## GET /health
 
-Returns the list of configured providers. Always open (never requires an API key).
+Returns the list of providers for the active profile. Always open (never
+requires an API key).
 
 ```bash
-curl http://localhost:9777/health
+curl http://localhost:9777/health            # every provider
+curl http://localhost:9777/p/email1/health   # only what email1 exposes
 ```
 
 ```json

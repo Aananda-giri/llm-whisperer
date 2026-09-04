@@ -40,13 +40,16 @@ have them.
 | `POST /v1/chat/completions`, SSE | Implemented | `05530e6` | [§3.3](./3-api/3.3-streaming.md) |
 | `POST /v1/embeddings` | Implemented | `d5e39c3` | [§3.4](./3-api/3.4-embeddings-and-auth.md) |
 | `POST /v1/messages` + Anthropic SSE | Implemented — **working tree** | In `src/server.ts`, not committed | [§3.1](./3-api/3.1-three-dialects.md) |
-| `GET /v1/models`, `GET /health` | Implemented | Enumerate provider keys only, not models | [§3.2](./3-api/3.2-choosing-a-model.md) |
+| `GET /v1/models`, `GET /health` | Implemented | Both scoped to the active profile; `/health` lists its providers | [§3.2](./3-api/3.2-choosing-a-model.md) |
+| Profile-scoped routing (`/p/<profile>/v1/*`) | Implemented | One shared router mounted bare and under `/p/:profile`; `resolveModel` gates models | [§3.2](./3-api/3.2-choosing-a-model.md) |
+| `GET /v1/models` lists models, not just providers | Implemented | Provider+model ids (`qwen/qwen3-235b`) plus a bare alias and a `wspr:` metadata field | [§3.2](./3-api/3.2-choosing-a-model.md) |
 | `WSPR_API_KEY` auth gate | Implemented | `0d847ed`; accepts Bearer and `x-api-key` | [§3.4](./3-api/3.4-embeddings-and-auth.md) |
-| Sampling params (`temperature`, `max_tokens`, …) | Planned | Only `model` and `messages` are forwarded upstream; the rest are silently dropped | [§4.1](./4-api-key-providers/4.1-one-class-many-services.md) |
-| Tool calling | Partial — browser providers | Browser providers simulate it by prompting (`src/providers/tool-protocol.ts`); API-key providers log a warning and ignore `tools` | [§3.1](./3-api/3.1-three-dialects.md) |
+| Sampling params (`temperature`, `max_tokens`, …) | Implemented | Forwarded to API-key providers via `ChatOptions.params`; browser providers ignore them | [§4.1](./4-api-key-providers/4.1-one-class-many-services.md) |
+| Tool calling | Implemented — both doors | Browser providers simulate it by prompting (`tool-protocol.ts`); API-key providers forward `tools` natively (`openai-tools.ts`) | [§3.1](./3-api/3.1-three-dialects.md) |
+| Client-config emitter (`wspr config <client>`) | Implemented | `src/clients.ts` registry: opencode, openai, anthropic, continue | [§3.2](./3-api/3.2-choosing-a-model.md) |
 | Real token counts in `usage` | Planned | Hard-coded `0`; upstream's real numbers are parsed and discarded | [§3.1](./3-api/3.1-three-dialects.md) |
 | Accurate `finish_reason` / `stop_reason` | Planned | Always `"stop"` / `"end_turn"`, including on truncation | [§5.2](./5-browser-providers/5.2-knowing-when-it-stopped.md) |
-| Model ids containing `/` | Planned — defect | `split("/")` truncates; no slashed OpenRouter or `@cf/…` id is reachable per request | [§3.2](./3-api/3.2-choosing-a-model.md) |
+| Model ids containing `/` | Implemented | `resolveModel` splits on the first `/`; slashed OpenRouter and `@cf/…` ids reach upstream | [§3.2](./3-api/3.2-choosing-a-model.md) |
 | Streaming errors return 200 | Planned — defect | Headers already flushed; the OpenAI error chunk has no `[DONE]` | [§3.3](./3-api/3.3-streaming.md) |
 | Bind to `127.0.0.1` by default | Implemented | `app.listen(port, config.host)`; `WSPR_HOST` overrides | [§3.4](./3-api/3.4-embeddings-and-auth.md) |
 | Vision passthrough | Partial | Works on OpenAI endpoint + API providers; Anthropic blocks are dropped, browser providers stringify | [§3.1](./3-api/3.1-three-dialects.md) |
@@ -107,6 +110,7 @@ have them.
 | Item | State | Evidence | Owner |
 |---|---|---|---|
 | `providers.yaml` drives everything | Implemented | 18 providers, 0 provider-specific code paths | [§2.2](./2-architecture/2.2-configuration-is-the-product.md) |
+| `profiles:` API scope block | Implemented | Declared provider/model set, validated at load; undeclared profiles expose everything | [§2.2](./2-architecture/2.2-configuration-is-the-product.md) |
 | Per-shape validation at load | Implemented | `api:` requires `baseUrl`/`model`/`keyEnv`; browser requires `url`/`inputSelector`/`responseSelector` | [§2.2](./2-architecture/2.2-configuration-is-the-product.md) |
 | `PROVIDERS_FILE` and CWD override | Implemented | Four candidates, first match wins | [§2.2](./2-architecture/2.2-configuration-is-the-product.md) |
 | A custom `providers.yaml` merges with the bundled one | Planned | It replaces it whole, which silently drops the other 17 providers | [§2.2](./2-architecture/2.2-configuration-is-the-product.md) |
