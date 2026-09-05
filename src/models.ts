@@ -27,6 +27,14 @@ export interface ModelEntry {
    * whether a session is live can only be learned by driving the browser.
    */
   keyPresent?: boolean;
+  /**
+   * Has this provider actually been driven end-to-end and confirmed working
+   * (see providers.yaml `verified:` / ProviderConfig.verified), as opposed to
+   * a best-effort selector guess nobody has live-tested? Client-config
+   * emitters use this to flag unverified browser models in their display
+   * name, so an agent's model picker shows which entries to trust.
+   */
+  verified?: boolean;
 }
 
 /** The subset of a profile's providers map that applies to a provider. */
@@ -87,6 +95,7 @@ function toEntry(
     ...(cfg.contextLimit !== undefined ? { contextLimit: cfg.contextLimit } : {}),
     ...(cfg.outputLimit !== undefined ? { outputLimit: cfg.outputLimit } : {}),
     ...(cfg.api ? { keyPresent: !!process.env[cfg.api.keyEnv]?.trim() } : {}),
+    verified: !!cfg.verified,
   };
 }
 

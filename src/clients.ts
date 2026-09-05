@@ -68,7 +68,12 @@ const opencode: ClientTarget = {
       const browser = m.kind === "browser";
       const fallback = DEFAULT_LIMITS[m.kind];
       models[m.id] = {
-        name: m.label,
+        // A browser model that has never actually been driven end-to-end is
+        // flagged right in the picker — its selectors are a best-effort guess
+        // (see providers.yaml `verified:`), and the difference between "this
+        // works" and "this is untested" belongs in front of whoever is about
+        // to pick a model, not buried in a doc.
+        name: browser && !m.verified ? `${m.label} (untested)` : m.label,
         tool_call: true,
         // Browser providers are text-only and ignore every sampling param
         // (see ChatOptions.params), so advertise neither.

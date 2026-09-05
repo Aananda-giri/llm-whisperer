@@ -104,6 +104,15 @@ Three of those fields are doing real work:
 `chunkTimeout` is sized from the provider's own `timeoutMs`, because a browser
 tool turn deliberately sends nothing until the answer settles (see below).
 
+**A browser model's `name` gets " (untested)" appended unless its
+`providers.yaml` entry sets `verified: true`.** Only `qwen` and `pi` have
+actually been driven end-to-end and confirmed working today (see
+`wiki/5-browser-providers/5.5-what-is-verified.md`); every other browser
+provider's selectors are a best-effort starting point nobody has live-tested.
+API providers need no such flag — they call a real HTTP API, not a scraped
+DOM — so they're never annotated. Pick `qwen` for anything that matters until
+you've verified another provider yourself and set `verified: true` for it.
+
 > If you set `WSPR_API_KEY`, change `apiKey` in the emitted block to that key.
 
 ### Browser providers: how the conversation is kept straight

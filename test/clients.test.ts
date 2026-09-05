@@ -7,8 +7,15 @@ const ctx: EmitContext = {
   baseUrl: "http://localhost:9777",
   label: "Personal (email1)",
   models: [
-    { id: "qwen", provider: "qwen", label: "qwen", kind: "browser" },
-    { id: "qwen/qwen3-235b", provider: "qwen", model: "qwen3-235b", label: "qwen3-235b", kind: "browser" },
+    { id: "qwen", provider: "qwen", label: "qwen", kind: "browser", verified: true },
+    {
+      id: "qwen/qwen3-235b",
+      provider: "qwen",
+      model: "qwen3-235b",
+      label: "qwen3-235b",
+      kind: "browser",
+      verified: true,
+    },
     { id: "groq", provider: "groq", label: "groq", kind: "api" },
   ],
 };
@@ -121,5 +128,34 @@ describe("registry", () => {
   it("exposes the known targets in order", () => {
     const ids = clientTargets().map((t) => t.id);
     assert.deepEqual(ids, ["opencode", "openai", "anthropic", "continue"]);
+  });
+});
+
+describe("opencode emitter — verified flag", () => {
+  it("leaves a verified browser model's name untouched", () => {
+    const doc = JSON.parse(CLIENT_TARGETS.opencode.emit(ctx));
+    assert.equal(doc.provider.email1.models["qwen/qwen3-235b"].name, "qwen3-235b");
+  });
+
+  it("flags an unverified browser model right in the picker", () => {
+    const doc = JSON.parse(
+      CLIENT_TARGETS.opencode.emit({
+        ...ctx,
+        models: [
+          { id: "chatgpt", provider: "chatgpt", label: "chatgpt", kind: "browser", verified: false },
+        ],
+      }),
+    );
+    assert.equal(doc.provider.email1.models.chatgpt.name, "chatgpt (untested)");
+  });
+
+  it("never flags an API model — it isn't selector-scraped, so the concept doesn't apply", () => {
+    const doc = JSON.parse(
+      CLIENT_TARGETS.opencode.emit({
+        ...ctx,
+        models: [{ id: "openai", provider: "openai", label: "openai", kind: "api", verified: false }],
+      }),
+    );
+    assert.equal(doc.provider.email1.models.openai.name, "openai");
   });
 });

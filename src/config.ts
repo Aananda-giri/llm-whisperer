@@ -136,6 +136,17 @@ export interface ProviderConfig {
   api?: ApiProviderConfig;
   /** Present ⇒ the provider supports declarative auto-login (see {@link LoginConfig}). */
   login?: LoginConfig;
+  /**
+   * Has this provider actually been driven end-to-end and confirmed working,
+   * as opposed to a best-effort selector guess? Surfaced to client-config
+   * emitters (`wspr config opencode`, …) so an agent's model picker shows
+   * which entries to trust. Defaults to `true` for API-key providers (a
+   * generic, well-tested HTTP code path) and `false` for browser providers
+   * unless the provider explicitly sets it — see the per-provider `✓
+   * Verified working` comments in providers.yaml, which are the source of
+   * truth this flag mirrors.
+   */
+  verified?: boolean;
 }
 
 /**
@@ -406,6 +417,11 @@ export function loadConfig(file?: string): AppConfig {
       requiresLogin: false,
       timeoutMs: 90000,
       stabilizeMs: 2000,
+      // API providers are a single well-tested HTTP code path, so they default
+      // to verified; a browser provider must earn it explicitly in YAML (see
+      // ProviderConfig.verified) because it depends on selectors nobody has
+      // necessarily driven live.
+      verified: !!cfg.api,
       ...cfg,
     } as ProviderConfig;
   }
