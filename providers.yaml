@@ -19,6 +19,21 @@
 #   modelPickerTrigger : (optional) click this to open the model picker dropdown
 #   models             : (optional) map of model name → selector to click in picker
 #
+# Agent-client fields (all optional — relevant when a coding agent such as
+# opencode drives this provider; see docs/clients.md):
+#   maxPromptChars     : refuse rather than type more than this into the chat
+#                        box. A chat website silently truncates a long message
+#                        (or turns it into a file attachment), so a hard limit
+#                        turns a silent wrong answer into a clear 413.
+#   toolResultMaxChars : middle-out truncate a single <tool_result> body to
+#                        this, tried before giving up on the budget above.
+#   bufferToolTurns    : read the answer once after it settles instead of
+#                        streaming deltas, whenever the turn declares tools.
+#                        Default true — incremental scraping drops the tail on
+#                        a DOM re-render, which corrupts a JSON tool call.
+#   contextLimit       : advertised context window, for `wspr config <client>`
+#   outputLimit        : advertised max output tokens, likewise
+#
 # NOTE: ✓ = verified working. Others are best-effort starting points —
 # verify with HEADLESS=false on first run and fix selectors as needed.
 
@@ -31,12 +46,21 @@ providers:
     requiresLogin: true
     loggedOutSelector: "button:has-text('Log in')"
     newChatSelector: "a:has-text('New Chat')"
-    inputSelector: "textarea"
-    sendSelector: ""
-    responseSelector: "[class*='phase-answer']"
-    stopSelector: ":text('Skip'), :text('Stop generating')"
+    inputSelector: "textarea.message-input-textarea, textarea"
+    # Qwen's composer no longer submits on Enter — the button is the only way.
+    sendSelector: "button[aria-label='Send']"
+    # A 2026 redesign renamed both of these (was `[class*='phase-answer']` /
+    # `:text('Skip')`); re-verified live against chat.qwen.ai.
+    responseSelector: ".custom-qwen-markdown"
+    stopSelector: "button[aria-label='Stop']"
     timeoutMs: 90000
     stabilizeMs: 2000
+    # Sized for an agent client: a dozen tool schemas plus a file or two of
+    # tool results. Raise it if your provider accepts longer messages.
+    maxPromptChars: 32000
+    toolResultMaxChars: 12000
+    contextLimit: 131072
+    outputLimit: 8192
     modelPickerTrigger: ""
     models:
       "qwen3-235b":    ""
