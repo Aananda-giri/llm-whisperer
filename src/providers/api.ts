@@ -154,6 +154,9 @@ export class ApiLLMProvider extends BaseProvider implements EmbeddingProvider, T
         Authorization: `Bearer ${key}`,
       },
       body: JSON.stringify(body),
+      // Real cancellation: when the client hangs up, stop paying for tokens
+      // nobody will read.
+      signal: options.signal,
     });
 
     if (!res.ok || !res.body) {

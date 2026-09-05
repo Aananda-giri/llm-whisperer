@@ -1,15 +1,25 @@
 import type { Page } from "playwright";
-import type { ProviderConfig } from "../config.js";
+import type { Continuity, ProviderConfig, SchemaStyle, SystemMode } from "../config.js";
 import type { SessionPool } from "../session-pool.js";
+import {
+  advanceKey,
+  foldKey,
+  pendingTurn,
+  planTurn,
+  SEED,
+  turnContainsUser,
+} from "./conversation.js";
 import { DEFAULT_BROWSER_PROFILE, validateBrowserProfile } from "../browser.js";
 import { isLoggedIn } from "../credentials/session.js";
 import { attemptLogin, type AttemptResult } from "../credentials/login.js";
 import type { Vault } from "../credentials/vault.js";
 import {
+  PromptTooLargeError,
   renderToolCalls,
   renderToolPreamble,
   renderToolResult,
   ToolCallScanner,
+  truncateToolResults,
   type ToolCall,
   type ToolChoice,
   type ToolDefinition,
@@ -79,6 +89,22 @@ export interface ChatOptions {
    * controls).
    */
   params?: Record<string, unknown>;
+  /**
+   * Cancels the turn. Browser providers stop polling and click the chat UI's
+   * stop button; API providers pass it to `fetch`. An aborted turn always
+   * leaves its tab dirty, so the next turn replays rather than continuing a
+   * thread whose tail nobody read.
+   */
+  signal?: AbortSignal;
+  /**
+   * Does the request declare tools? A client that sends `tools` is an agent
+   * client and re-sends its whole history every turn, which is what lets a
+   * browser provider tell "open a new conversation" apart from "continue the
+   * tab". See planTurn().
+   */
+  stateless?: boolean;
+  /** Per-request override of the server's continuity policy. */
+  continuity?: Continuity;
 }
 
 /**
@@ -151,25 +177,6 @@ export function supportsAutoLogin(p: LLMProvider): p is LLMProvider & AutoLoginP
 }
 
 /**
- * The trailing run of messages after the last assistant message. With the
- * default `newChat: false`, this is what actually gets sent to the browser —
- * and the whole reason a tool loop works: feeding back `[user, assistant,
- * tool, tool]` sends the two `<tool_result>` blocks, not a re-ask of the stale
- * user question.
- */
-export function pendingTurn(messages: Message[]): Message[] {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "assistant") return messages.slice(i + 1);
-  }
-  return messages;
-}
-
-/** Does this turn include a user question (as opposed to only tool results)? */
-export function turnContainsUser(messages: Message[]): boolean {
-  return messages.some((m) => m.role === "user");
-}
-
-/**
  * Shared base: implements `chat()` (collect all deltas) in terms of the
  * subclass's `stream()`, so each provider type only writes the streaming logic.
  */
@@ -217,6 +224,15 @@ export class WebLLMProvider extends BaseProvider {
     protected readonly config: ProviderConfig,
     protected readonly pool: SessionPool,
     protected readonly vault?: Vault,
+    /**
+     * Server-wide affinity/rendering policy. Optional so a provider can still
+     * be constructed standalone in a test; the defaults match loadConfig's.
+     */
+    protected readonly policy: {
+      continuity?: Continuity;
+      systemMode?: SystemMode;
+      schemaStyle?: SchemaStyle;
+    } = {},
   ) {
     super(name);
     this.autoLoginEnabled = !!vault && (process.env.WSPR_AUTO_LOGIN ?? "true") !== "false";
@@ -243,67 +259,147 @@ export class WebLLMProvider extends BaseProvider {
     const profile = validateBrowserProfile(
       options.profile ?? this.config.profile ?? DEFAULT_BROWSER_PROFILE,
     );
-    const page = await this.pool.acquire(this.name, profile);
+    const systemMode = this.policy.systemMode ?? "ignore";
+    const continuity = options.continuity ?? this.policy.continuity ?? "auto";
+
+    // Only scan for tool calls when the caller actually declared tools —
+    // otherwise a model legitimately writing `<tool_call>` in prose would
+    // get mangled.
+    const tools = options.tools;
+    const scanner = tools?.length
+      ? new ToolCallScanner(new Set(tools.map((t) => t.name)))
+      : null;
+
+    // Ask the pool for the tab already holding this conversation. Affinity is
+    // best-effort, so the plan below is recomputed against whatever we get.
+    const wanted = foldKey(
+      SEED,
+      messages.slice(0, messages.length - pendingTurn(messages).length),
+      systemMode,
+    );
+    const page = await this.pool.acquire(this.name, profile, wanted);
+
+    // Any exit that is not a completed turn leaves the tab's thread in a state
+    // nobody has read to the end — a half-typed prompt, a partial answer, an
+    // answer the client cancelled. Assume dirty and prove otherwise.
+    let clean = false;
+    const emitted: ToolCall[] = [];
     try {
       await this.ensureOnPage(page);
       await this.ensureLoggedIn(page, profile);
 
-      if (options.newChat) {
+      const plan = planTurn({
+        messages,
+        tabKey: this.pool.stateKey(page),
+        newChat: options.newChat,
+        continuity,
+        systemMode,
+        stateless: !!options.stateless,
+      });
+
+      if (plan.mode === "replay") {
+        // The tab holds someone else's conversation (or none we can vouch
+        // for). Rebuild from scratch rather than append to a thread the model
+        // will read as context.
+        this.pool.clearState(page);
         await this.newConversation(page);
       }
       if (options.model) {
         await this.switchModel(page, options.model);
       }
 
-      // Only scan for tool calls when the caller actually declared tools —
-      // otherwise a model legitimately writing `<tool_call>` in prose would
-      // get mangled.
-      const tools = options.tools;
-      const scanner = tools?.length
-        ? new ToolCallScanner(new Set(tools.map((t) => t.name)))
-        : null;
-
-      const turn = pendingTurn(messages);
-      let prompt = options.newChat ? this.flatten(messages) : this.flatten(turn);
-      if (!options.newChat && !prompt) {
-        // Degenerate case (messages end on an assistant turn): fall back to
-        // the last user message so we never send a blank prompt.
-        const lastUser = [...messages].reverse().find((m) => m.role === "user");
-        prompt = lastUser?.content ?? "";
-      }
-
-      // Stateless preamble rule: restate the tool schema whenever we are
-      // opening a fresh user question. A turn that is only tool results skips
-      // it — the browser thread already holds the instructions from the return.
-      if (turnContainsUser(turn) && tools?.length && options.toolChoice !== "none") {
-        const preamble = renderToolPreamble(tools, options.toolChoice);
-        if (preamble) prompt = `${preamble}\n\n${prompt}`;
-      }
+      const prompt = this.buildPrompt(plan.promptMessages, plan.needsPreamble, options);
 
       const before = await this.countResponses(page);
       await this.submitPrompt(page, prompt);
 
-      for await (const delta of this.streamAnswer(page, before)) {
-        if (scanner) {
-          const out = scanner.push(delta);
-          if (out.text) yield { type: "text", text: out.text };
-          for (const call of out.calls) yield { type: "tool_call", call };
-        } else {
-          yield { type: "text", text: delta };
+      // With tools declared, read the answer once after it settles instead of
+      // streaming deltas. streamAnswer() drops the tail whenever the chat UI
+      // re-renders non-incrementally (it can only emit a suffix of what it has
+      // already emitted), which is survivable for prose and fatal for the JSON
+      // of a tool call. See the `bufferToolTurns` note in config.ts.
+      const buffered = scanner !== null && (this.config.bufferToolTurns ?? true);
+      if (buffered) {
+        const final = await this.finalAnswer(page, before, options.signal);
+        const out = scanner!.push(final);
+        if (out.text) yield { type: "text", text: out.text };
+        for (const call of out.calls) {
+          emitted.push(call);
+          yield { type: "tool_call", call };
+        }
+      } else {
+        for await (const delta of this.streamAnswer(page, before, options.signal)) {
+          if (scanner) {
+            const out = scanner.push(delta);
+            if (out.text) yield { type: "text", text: out.text };
+            for (const call of out.calls) {
+              emitted.push(call);
+              yield { type: "tool_call", call };
+            }
+          } else {
+            yield { type: "text", text: delta };
+          }
         }
       }
 
       if (scanner) {
         const out = scanner.flush();
         if (out.text) yield { type: "text", text: out.text };
-        for (const call of out.calls) yield { type: "tool_call", call };
+        for (const call of out.calls) {
+          emitted.push(call);
+          yield { type: "tool_call", call };
+        }
+      }
+
+      // A cancelled turn read a partial answer, so the tab's thread and the
+      // client's transcript have already diverged: never claim it is clean.
+      if (!options.signal?.aborted) {
+        this.pool.setStateKey(page, advanceKey(plan, emitted, systemMode));
+        clean = true;
       }
     } finally {
+      if (!clean) this.pool.clearState(page);
       this.pool.release(this.name, profile, page);
     }
   }
 
-  // --- overridable hooks -------------------------------------------------
+  /**
+   * Flatten a turn into the single string typed into the chat box, restating
+   * the tool preamble when the turn opens a user question, and enforcing the
+   * provider's prompt budget.
+   */
+  protected buildPrompt(
+    promptMessages: Message[],
+    needsPreamble: boolean,
+    options: ChatOptions,
+  ): string {
+    const { maxPromptChars, toolResultMaxChars } = this.config;
+    const tools = options.tools;
+
+    const preamble =
+      needsPreamble && tools?.length && options.toolChoice !== "none"
+        ? renderToolPreamble(tools, options.toolChoice, { style: this.policy.schemaStyle })
+        : "";
+    const render = (msgs: Message[]) => {
+      const body = this.flatten(msgs);
+      return preamble ? `${preamble}\n\n${body}` : body;
+    };
+
+    let prompt = render(promptMessages);
+    if (!maxPromptChars || prompt.length <= maxPromptChars) return prompt;
+
+    // Over budget. Tool results — a whole file from `read`, a wall of output
+    // from `bash` — are what blow it, and are the only part we can shorten
+    // without discarding a turn, so trim those first.
+    if (toolResultMaxChars) {
+      prompt = render(truncateToolResults(promptMessages, toolResultMaxChars));
+      if (prompt.length <= maxPromptChars) return prompt;
+    }
+
+    throw new PromptTooLargeError(this.name, prompt.length, maxPromptChars);
+  }
+
+  // --- overridable hooks -------------------------------------------------  // --- overridable hooks -------------------------------------------------
 
   protected async ensureOnPage(page: Page): Promise<void> {
     if (!page.url().startsWith(new URL(this.config.url).origin)) {
@@ -421,13 +517,18 @@ export class WebLLMProvider extends BaseProvider {
    * types. Assumes text is append-only (true for all streaming LLMs).
    * Non-incremental DOM changes (rare edits) are skipped silently.
    */
-  protected async *streamAnswer(page: Page, before: number): AsyncGenerator<string> {
+  protected async *streamAnswer(
+    page: Page,
+    before: number,
+    signal?: AbortSignal,
+  ): AsyncGenerator<string> {
     const { timeoutMs, stabilizeMs } = this.config;
     const responses = page.locator(this.config.responseSelector);
     const deadline = Date.now() + timeoutMs;
 
     // 1. Wait for a brand-new response node to appear.
     while ((await responses.count()) <= before) {
+      if (signal?.aborted) return;
       if (Date.now() > deadline) {
         await page.screenshot({ path: `/tmp/${this.name}-timeout.png` }).catch(() => {});
         throw new Error(
@@ -444,6 +545,12 @@ export class WebLLMProvider extends BaseProvider {
     let stableSince = Date.now();
 
     while (Date.now() < deadline) {
+      if (signal?.aborted) {
+        // The client is gone. Stop the tab too, so the provider is not left
+        // generating an answer nobody will read.
+        await this.stopGeneration(page);
+        return;
+      }
       const text = (await responses.last().innerText().catch(() => "")).trim();
 
       if (text !== last) {
@@ -467,6 +574,37 @@ export class WebLLMProvider extends BaseProvider {
       await page.waitForTimeout(300);
     }
     // Generator returns without throwing — caller has already received partial output.
+  }
+
+  /**
+   * Wait for the answer to settle, then read it once.
+   *
+   * This is the tool-turn path. {@link streamAnswer} can only ever emit a
+   * suffix of what it has already emitted (`text.startsWith(emitted)`), so a
+   * chat UI that re-renders a block non-incrementally — which every Markdown
+   * renderer does when a code fence closes — silently drops the rest of the
+   * answer. Losing the tail of prose is a blemish; losing the tail of a JSON
+   * tool call means the agent gets nothing. Reading the settled text once
+   * costs the streaming display and buys correctness.
+   */
+  protected async finalAnswer(page: Page, before: number, signal?: AbortSignal): Promise<string> {
+    for await (const _delta of this.streamAnswer(page, before, signal)) {
+      // Drain: streamAnswer owns the appear/settle/timeout logic. Its deltas
+      // are unreliable for JSON, but its *termination* is exactly right.
+    }
+    if (signal?.aborted) return "";
+    const responses = page.locator(this.config.responseSelector);
+    return (await responses.last().innerText().catch(() => "")).trim();
+  }
+
+  /** Click the chat UI's stop button, if it has one and it is showing. */
+  protected async stopGeneration(page: Page): Promise<void> {
+    if (!this.config.stopSelector) return;
+    await page
+      .locator(this.config.stopSelector)
+      .first()
+      .click({ timeout: 2000 })
+      .catch(() => {});
   }
 
   protected async isStreaming(page: Page): Promise<boolean> {
@@ -502,6 +640,11 @@ export class WebLLMProvider extends BaseProvider {
     return `${label}: ${m.content}`;
   }
 }
+
+// Re-exported from their new home in conversation.ts, where the rest of the
+// turn-planning logic lives. They were part of this module's public surface
+// before the split.
+export { pendingTurn, turnContainsUser };
 
 export class LoginRequiredError extends Error {
   constructor(public provider: string) {

@@ -58,6 +58,10 @@ export async function checkSessions(
       // provider would falsely report a healthy session.
       if (!page.url().startsWith(new URL(cfg.url).origin)) {
         await page.goto(cfg.url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        // The navigation discarded whatever conversation this tab held, so the
+        // pool must stop believing it still holds it. Only on this branch: the
+        // no-navigation case above deliberately leaves a live thread alone.
+        pool.clearState(page);
       }
       row.state = await confirmSession(page, cfg);
       row.loggedIn = row.state === "in";

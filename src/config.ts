@@ -57,6 +57,36 @@ export interface LoginConfig {
   timeoutMs?: number;
 }
 
+/**
+ * How a browser provider chooses between continuing the tab's existing thread
+ * and replaying the client's transcript into a fresh one.
+ *
+ * - `auto`    — continue only when the tab provably holds the client's history
+ *               (conversation-key match); otherwise replay. The default, and
+ *               the only setting that is correct for a stateless agent client.
+ * - `tab`     — always continue, never replay. wspr's historical behaviour:
+ *               the browser tab is the conversation and the client is trusted
+ *               to send only new turns.
+ * - `replay`  — always start a fresh thread and re-send everything. Slowest and
+ *               most faithful; useful for debugging a provider.
+ */
+export type Continuity = "auto" | "tab" | "replay";
+
+/**
+ * Whether the conversation key covers system-message *content*.
+ *
+ * `ignore` (default) is deliberate: coding agents rebuild their system prompt
+ * every request with volatile context (working directory, today's date, git
+ * status), so hashing it would score every single turn as a miss and replay the
+ * whole transcript each time. The tab keeps the system prompt it was opened
+ * with — the same trade already made for assistant text. `hash` is available
+ * for clients whose system prompt is stable and semantically load-bearing.
+ */
+export type SystemMode = "ignore" | "hash";
+
+/** How a tool's JSON Schema is rendered into the browser prompt preamble. */
+export type SchemaStyle = "compact" | "json" | "pretty";
+
 export interface ProviderConfig {
   url: string;
   requiresLogin: boolean;
@@ -68,6 +98,30 @@ export interface ProviderConfig {
   loggedOutSelector?: string;
   timeoutMs: number;
   stabilizeMs: number;
+  /**
+   * Hard cap on the characters wspr will type into the chat box. A web chat
+   * input silently truncates (or converts a long paste into a file
+   * attachment), so an over-budget prompt must fail loudly instead. Undefined
+   * ⇒ unlimited. Browser providers only.
+   */
+  maxPromptChars?: number;
+  /**
+   * Cap on a single `<tool_result>` body before it is middle-out truncated.
+   * An agent's `read`/`bash` results are the thing that blows a prompt budget,
+   * so they are trimmed first. Undefined ⇒ untrimmed.
+   */
+  toolResultMaxChars?: number;
+  /**
+   * Read the answer once, after it stabilizes, instead of streaming deltas —
+   * used when the turn declares tools. Incremental `innerText()` polling drops
+   * the tail on any non-incremental DOM re-render (see streamAnswer), which is
+   * survivable for prose and fatal for a JSON tool call. Default true.
+   */
+  bufferToolTurns?: boolean;
+  /** Advertised context window, for client-config emitters. */
+  contextLimit?: number;
+  /** Advertised max output tokens, for client-config emitters. */
+  outputLimit?: number;
   /** Click this to open the model picker dropdown. */
   modelPickerTrigger?: string;
   /** Map of model name → selector to click inside the picker. */
@@ -135,6 +189,24 @@ export interface AppConfig {
    * Set WSPR_WARM=true to restore eager warming (slightly faster first hit).
    */
   warmTabs: boolean;
+  /**
+   * Max concurrent browser tabs per provider x profile. With conversation
+   * affinity each tab holds one conversation, so this is also the number of
+   * simultaneous conversations a browser provider can keep hot. Agent clients
+   * (which interleave a main loop with title/summary calls) want >= 3.
+   */
+  maxPagesPerProvider: number;
+  /** Request body size limit passed to `express.json`. */
+  maxBody: string;
+  /**
+   * How a browser provider decides between continuing the tab's thread and
+   * replaying the transcript into a fresh one. See planTurn().
+   */
+  continuity: Continuity;
+  /** Whether the conversation key hashes system-message content. */
+  affinitySystemMode: SystemMode;
+  /** How tool JSON Schemas are rendered into the prompt preamble. */
+  toolSchemaStyle: SchemaStyle;
   providers: Record<string, ProviderConfig>;
 }
 
@@ -358,6 +430,44 @@ export function loadConfig(file?: string): AppConfig {
     browserChannel: resolveBrowserChannel(),
     browserProfile: defaultBrowserProfile,
     warmTabs: (process.env.WSPR_WARM ?? "false").toLowerCase() === "true",
+    maxPagesPerProvider: positiveInt(process.env.WSPR_MAX_PAGES, 2, "WSPR_MAX_PAGES"),
+    // 1mb (Express's default) is far too small for an agent client: a single
+    // `read` tool result carrying a source file routinely exceeds it.
+    maxBody: process.env.WSPR_MAX_BODY?.trim() || "32mb",
+    continuity: oneOf(process.env.WSPR_CONTINUITY, ["auto", "tab", "replay"], "auto", "WSPR_CONTINUITY"),
+    affinitySystemMode: oneOf(process.env.WSPR_AFFINITY_SYSTEM, ["ignore", "hash"], "ignore", "WSPR_AFFINITY_SYSTEM"),
+    toolSchemaStyle: oneOf(
+      process.env.WSPR_TOOL_SCHEMA_STYLE,
+      ["compact", "json", "pretty"],
+      "compact",
+      "WSPR_TOOL_SCHEMA_STYLE",
+    ),
     providers,
   };
+}
+
+/** Parse a positive-integer env var, falling back to `fallback` when unset. */
+function positiveInt(raw: string | undefined, fallback: number, name: string): number {
+  const text = raw?.trim();
+  if (!text) return fallback;
+  const n = Number(text);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`${name} must be a positive integer (got "${text}").`);
+  }
+  return n;
+}
+
+/** Parse an enum-valued env var, listing the valid values when it is wrong. */
+function oneOf<T extends string>(
+  raw: string | undefined,
+  allowed: readonly T[],
+  fallback: T,
+  name: string,
+): T {
+  const text = raw?.trim().toLowerCase();
+  if (!text) return fallback;
+  if (!(allowed as readonly string[]).includes(text)) {
+    throw new Error(`${name} must be one of ${allowed.join(", ")} (got "${text}").`);
+  }
+  return text as T;
 }

@@ -124,7 +124,7 @@ Environment:
 
 async function serve(config: ReturnType<typeof loadConfig>) {
   const browser = new BrowserManager(config.profilesDir, config.headless, config.browserChannel);
-  const pool = new SessionPool(browser);
+  const pool = new SessionPool(browser, config.maxPagesPerProvider);
 
   // One vault per process. Unlock at startup only if a passphrase is provided;
   // otherwise it stays locked and the dashboard (or WSPR_VAULT_KEY) unlocks it.
@@ -210,6 +210,9 @@ async function warmProviders(
     try {
       const page = await pool.acquire(name, DEFAULT_BROWSER_PROFILE);
       await page.goto(cfg.url, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+      // Navigating away discards the tab's thread, so it no longer holds the
+      // conversation the pool thinks it does.
+      pool.clearState(page);
       pool.release(name, DEFAULT_BROWSER_PROFILE, page);
       console.log(`  ✓ ${name} ready`);
     } catch (e) {
@@ -399,7 +402,7 @@ async function status(config: ReturnType<typeof loadConfig>, args: string[]) {
     }
   } else {
     const browser = new BrowserManager(config.profilesDir, true, config.browserChannel);
-    const pool = new SessionPool(browser);
+    const pool = new SessionPool(browser, config.maxPagesPerProvider);
     try {
       console.log(`Checking ${targets.length} provider(s) in profile "${profile}"…\n`);
       rows = await checkSessions(pool, config, targets);

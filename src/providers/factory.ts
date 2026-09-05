@@ -28,7 +28,14 @@ export function buildProviders(
       continue;
     }
     const Cls = OVERRIDES[name] ?? WebLLMProvider;
-    providers.set(name, new Cls(name, cfg, pool, vault));
+    providers.set(
+      name,
+      new Cls(name, cfg, pool, vault, {
+        continuity: config.continuity,
+        systemMode: config.affinitySystemMode,
+        schemaStyle: config.toolSchemaStyle,
+      }),
+    );
   }
   return providers;
 }
