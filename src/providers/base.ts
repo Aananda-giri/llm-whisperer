@@ -396,6 +396,11 @@ export class WebLLMProvider extends BaseProvider {
     await input.waitFor({ state: "visible", timeout: 15000 });
     await input.click();
     await input.fill(prompt);
+    // fill() sets the value but does not fire the `input` event a stateful
+    // editor (React, Vue, …) listens for, so Enter would submit an empty box.
+    // Dispatch it so the app registers the text before we press Enter.
+    await input.dispatchEvent("input");
+    await page.waitForTimeout(120);
 
     if (this.config.sendSelector) {
       const send = page.locator(this.config.sendSelector).first();
