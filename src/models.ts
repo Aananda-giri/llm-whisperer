@@ -14,6 +14,19 @@ export interface ModelEntry {
   /** Display name for client-config emitters. */
   label: string;
   kind: "browser" | "api";
+  /** Browser providers only: how long one turn may take, from providers.yaml. */
+  timeoutMs?: number;
+  /** Advertised context window, when the provider declares one. */
+  contextLimit?: number;
+  /** Advertised max output tokens, when the provider declares one. */
+  outputLimit?: number;
+  /**
+   * API providers: is the provider's key env var actually set? Client-config
+   * emitters use it to avoid nominating a provider that cannot answer (see the
+   * `small_model` choice in clients.ts). Undefined for browser providers —
+   * whether a session is live can only be learned by driving the browser.
+   */
+  keyPresent?: boolean;
 }
 
 /** The subset of a profile's providers map that applies to a provider. */
@@ -68,6 +81,12 @@ function toEntry(
     model: name,
     label: name ?? providerKey,
     kind,
+    // Carried so client-config emitters can size timeouts and context windows
+    // from the provider's own config rather than guessing.
+    ...(kind === "browser" ? { timeoutMs: cfg.timeoutMs } : {}),
+    ...(cfg.contextLimit !== undefined ? { contextLimit: cfg.contextLimit } : {}),
+    ...(cfg.outputLimit !== undefined ? { outputLimit: cfg.outputLimit } : {}),
+    ...(cfg.api ? { keyPresent: !!process.env[cfg.api.keyEnv]?.trim() } : {}),
   };
 }
 

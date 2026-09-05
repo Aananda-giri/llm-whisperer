@@ -40,38 +40,85 @@ function anthropicBase(ctx: EmitContext): string {
   return `${ctx.baseUrl}/p/${ctx.profile}`;
 }
 
+/** Fallbacks when a provider declares no limits of its own. */
+const DEFAULT_LIMITS = {
+  browser: { context: 32768, output: 8192 },
+  api: { context: 128000, output: 8192 },
+} as const;
+
 /**
  * opencode: an OpenAI-compatible provider block keyed by profile, with every
  * model in the catalog listed explicitly. opencode does NOT auto-discover from
  * `/v1/models` — it requires a model map — which is exactly why this exists.
+ *
+ * The per-model flags matter as much as the list. `tool_call` is what makes
+ * opencode send `tools` at all (wspr forwards them natively to API providers
+ * and simulates them for browser ones). `temperature: false` stops it sending
+ * a sampling parameter a browser provider can only ignore. And `small_model`
+ * points title generation at an API-key provider, so those side requests never
+ * take a browser tab away from the agent loop.
  */
 const opencode: ClientTarget = {
   id: "opencode",
   label: "opencode (coding agent)",
   file: "opencode.json",
   emit(ctx) {
-    const models: Record<string, { name: string }> = {};
-    for (const m of ctx.models) models[m.id] = { name: m.label };
-    return JSON.stringify(
-      {
-        $schema: "https://opencode.ai/config.json",
-        provider: {
-          [ctx.profile]: {
-            npm: "@ai-sdk/openai-compatible",
-            name: ctx.label || ctx.profile,
-            options: {
-              baseURL: openaiBase(ctx),
-              // Our proxy is keyless unless WSPR_API_KEY is set; a placeholder
-              // keeps the OpenAI-compatible adapter happy either way.
-              apiKey: "not-needed",
-            },
-            models,
+    const models: Record<string, unknown> = {};
+    for (const m of ctx.models) {
+      const browser = m.kind === "browser";
+      const fallback = DEFAULT_LIMITS[m.kind];
+      models[m.id] = {
+        name: m.label,
+        tool_call: true,
+        // Browser providers are text-only and ignore every sampling param
+        // (see ChatOptions.params), so advertise neither.
+        attachment: !browser,
+        temperature: !browser,
+        reasoning: false,
+        limit: {
+          context: m.contextLimit ?? fallback.context,
+          output: m.outputLimit ?? fallback.output,
+        },
+      };
+    }
+
+    // A browser turn is one page-load plus a human-speed answer, and a
+    // tool turn sends nothing at all until the answer settles — so the
+    // chunk timeout, not the total, is the one that would fire.
+    const slowest = ctx.models.reduce((ms, m) => Math.max(ms, m.timeoutMs ?? 0), 0);
+    const perChunk = slowest ? slowest + 60_000 : 300_000;
+
+    const doc: Record<string, unknown> = {
+      $schema: "https://opencode.ai/config.json",
+      provider: {
+        [ctx.profile]: {
+          npm: "@ai-sdk/openai-compatible",
+          name: ctx.label || ctx.profile,
+          options: {
+            baseURL: openaiBase(ctx),
+            // Our proxy is keyless unless WSPR_API_KEY is set; a placeholder
+            // keeps the OpenAI-compatible adapter happy either way.
+            apiKey: "not-needed",
+            headerTimeout: perChunk,
+            chunkTimeout: perChunk,
+            timeout: perChunk * 4,
           },
+          models,
         },
       },
-      null,
-      2,
-    );
+    };
+
+    // Title generation and summarisation run on `small_model`. Left unset,
+    // opencode uses the main model — which for a browser provider means a
+    // second request racing the agent loop for the same tab. Point it at an
+    // API-key model when the profile exposes one, preferring a provider whose
+    // key is actually set: nominating one that 401s makes every session
+    // untitled, which looks like a wspr bug rather than a missing key.
+    const api = ctx.models.filter((m) => m.kind === "api" && m.model === undefined);
+    const small = api.find((m) => m.keyPresent) ?? api[0];
+    if (small) doc.small_model = `${ctx.profile}/${small.id}`;
+
+    return JSON.stringify(doc, null, 2);
   },
 };
 

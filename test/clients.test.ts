@@ -23,6 +23,76 @@ describe("opencode emitter", () => {
     assert.ok("qwen/qwen3-235b" in doc.provider.email1.models);
     assert.equal(doc.provider.email1.models["qwen/qwen3-235b"].name, "qwen3-235b");
   });
+
+  it("declares tool_call on every model — without it opencode sends no tools", () => {
+    const models = JSON.parse(CLIENT_TARGETS.opencode.emit(ctx)).provider.email1.models;
+    for (const m of Object.values<any>(models)) assert.equal(m.tool_call, true);
+  });
+
+  it("tells opencode a browser model has no sampling controls", () => {
+    const models = JSON.parse(CLIENT_TARGETS.opencode.emit(ctx)).provider.email1.models;
+    assert.equal(models.qwen.temperature, false, "browser providers ignore params");
+    assert.equal(models.qwen.attachment, false, "and are text-only");
+    assert.equal(models.groq.temperature, true, "API providers forward them natively");
+  });
+
+  it("gives every model a limit with both required fields", () => {
+    const models = JSON.parse(CLIENT_TARGETS.opencode.emit(ctx)).provider.email1.models;
+    for (const m of Object.values<any>(models)) {
+      assert.ok(Number.isFinite(m.limit.context), "limit.context is required by the schema");
+      assert.ok(Number.isFinite(m.limit.output), "so is limit.output");
+    }
+  });
+
+  it("prefers a provider-declared limit over the default", () => {
+    const doc = JSON.parse(
+      CLIENT_TARGETS.opencode.emit({
+        ...ctx,
+        models: [{ ...ctx.models[0], contextLimit: 1_000_000, outputLimit: 64_000 }],
+      }),
+    );
+    assert.deepEqual(doc.provider.email1.models.qwen.limit, { context: 1_000_000, output: 64_000 });
+  });
+
+  it("sizes the chunk timeout from the slowest browser turn", () => {
+    const doc = JSON.parse(
+      CLIENT_TARGETS.opencode.emit({
+        ...ctx,
+        models: [{ ...ctx.models[0], timeoutMs: 120_000 }],
+      }),
+    );
+    // A buffered tool turn sends nothing until the answer settles, so this is
+    // the timeout that would fire first if it were left at opencode's default.
+    assert.equal(doc.provider.email1.options.chunkTimeout, 180_000);
+    assert.ok(doc.provider.email1.options.timeout > 180_000);
+  });
+
+  describe("small_model", () => {
+    it("points title generation at an API provider, off the browser tabs", () => {
+      const doc = JSON.parse(CLIENT_TARGETS.opencode.emit(ctx));
+      assert.equal(doc.small_model, "email1/groq");
+    });
+
+    it("prefers one whose key is actually set", () => {
+      const doc = JSON.parse(
+        CLIENT_TARGETS.opencode.emit({
+          ...ctx,
+          models: [
+            { id: "openai", provider: "openai", label: "openai", kind: "api", keyPresent: false },
+            { id: "gemini", provider: "gemini", label: "gemini", kind: "api", keyPresent: true },
+          ],
+        }),
+      );
+      assert.equal(doc.small_model, "email1/gemini");
+    });
+
+    it("is omitted for a browser-only profile rather than named blindly", () => {
+      const doc = JSON.parse(
+        CLIENT_TARGETS.opencode.emit({ ...ctx, models: ctx.models.filter((m) => m.kind === "browser") }),
+      );
+      assert.equal("small_model" in doc, false);
+    });
+  });
 });
 
 describe("env emitters", () => {
