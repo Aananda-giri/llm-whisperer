@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import express from "express";
+import type { NextFunction, Request, Response } from "express";
 import type { AppConfig } from "./config.js";
 import type { SessionPool } from "./session-pool.js";
 import { Credential, VaultHandle, type LoginMethod } from "./credentials/vault.js";
@@ -23,6 +24,7 @@ import {
   type ToolCall,
   type ToolChoice,
   type ToolDefinition,
+  PromptTooLargeError,
 } from "./providers/tool-protocol.js";
 import { ApiKeyMissingError } from "./providers/api.js";
 import { listModels, resolveModel } from "./models.js";
@@ -169,13 +171,29 @@ export function openaiToMessages(messages: any[]): Message[] {
     if (m.role === "tool") {
       return {
         role: "tool",
-        content: typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? ""),
+        // A tool result can arrive as a content-part array (the AI SDK emits
+        // that shape when cache breakpoints are on). Flatten it like any other
+        // content — stringifying it types a literal `[{"type":"text",…}]` into
+        // the chat box. JSON is the fallback only for a shape with no text
+        // parts at all, where showing something beats showing nothing.
+        content: toolContentToText(m.content),
         tool_call_id: m.tool_call_id,
         name: m.name,
       } as Message;
     }
     return { role: m.role, content: openaiContentToText(m.content) } as Message;
   });
+}
+
+/**
+ * Flatten a `role: "tool"` message's content to the text we type into the tab.
+ * Falls back to JSON only when the value carries no text parts to extract.
+ */
+function toolContentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  const text = openaiContentToText(content);
+  if (text) return text;
+  return content == null ? "" : JSON.stringify(content);
 }
 
 /** Flatten an OpenAI `content` (string, or array of text/image parts) to plain text. */
@@ -188,6 +206,43 @@ function openaiContentToText(content: unknown): string {
     )
     .map((b) => b.text)
     .join("\n");
+}
+
+/**
+ * An AbortSignal that fires when the client hangs up.
+ *
+ * A browser provider that keeps polling after the client is gone burns a tab
+ * (and the provider's rate limit) on an answer nobody will read, and — worse —
+ * leaves a half-read exchange in the tab that would poison the next turn's
+ * conversation affinity. See WebLLMProvider.streamWithTools.
+ */
+function abortOnDisconnect(_req: Request, res: Response): AbortSignal {
+  const ac = new AbortController();
+  // Listen on the *response*, not the request. `req`'s "close" fires as soon
+  // as the request body has been fully read — which for an ordinary POST is
+  // immediately, and would abort every call. `res`'s "close" fires when the
+  // connection goes away; `writableEnded` then tells a hang-up apart from a
+  // response we finished writing ourselves.
+  res.on("close", () => {
+    if (!res.writableEnded) ac.abort();
+  });
+  return ac.signal;
+}
+
+/** The `error` payload for a failure, tagged with the type a client can act on. */
+function errorBody(err: unknown): { message: string; type: string } {
+  if (err instanceof LoginRequiredError || err instanceof ApiKeyMissingError) {
+    return { message: err.message, type: "authentication_error" };
+  }
+  if (err instanceof PromptTooLargeError) {
+    return { message: err.message, type: "invalid_request_error" };
+  }
+  return { message: (err as Error).message, type: "server_error" };
+}
+
+/** The Anthropic dialect's name for one of {@link errorBody}'s types. */
+function anthropicErrorType(type: string): string {
+  return type === "server_error" ? "api_error" : type;
 }
 
 /** Map OpenAI `tools` to internal {@link ToolDefinition}s (function shape). */
@@ -290,7 +345,24 @@ async function collectText(
 export function createServer(config: AppConfig, pool: SessionPool, vault?: VaultHandle, uiToken?: string) {
   const providers = buildProviders(config, pool, vault);
   const app = express();
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({ limit: config.maxBody }));
+  // Without this, an over-limit body escapes to Express's default handler and
+  // the client gets an HTML 413 — which an OpenAI SDK reports as an opaque
+  // JSON parse failure rather than "your request was too big".
+  app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
+    if (err?.type === "entity.too.large") {
+      res.status(413).json({
+        error: {
+          message:
+            `Request body exceeds the ${config.maxBody} limit. Agent clients send whole ` +
+            `files in tool results — raise it with WSPR_MAX_BODY.`,
+          type: "invalid_request_error",
+        },
+      });
+      return;
+    }
+    next(err);
+  });
 
   // ── optional API-key authentication ──────────────────────────────────────
   // When WSPR_API_KEY is set, gated routes require a matching key supplied
@@ -345,7 +417,7 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
   });
 
   api.post("/chat", requireApiKeySimple, async (req, res) => {
-    const { provider, messages, model, newChat, profile } = req.body ?? {};
+    const { provider, messages, model, newChat, profile, continuity } = req.body ?? {};
     // `provider` selects the browser session; `model` switches within it. A
     // bare model ("qwen") or `provider/model` both resolve through resolveModel,
     // so profile scoping and the first-slash split apply here too.
@@ -376,6 +448,8 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
         newChat,
         model: resolved.model,
         profile: profile ?? req.wsprProfile,
+        signal: abortOnDisconnect(req, res),
+        continuity,
       });
       res.json({ provider: target, message: { role: "assistant", content } });
     } catch (err) {
@@ -421,6 +495,7 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
       profile,
       tools,
       tool_choice,
+      continuity,
       temperature,
       max_tokens,
       top_p,
@@ -474,6 +549,12 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
       tools: toolDefs,
       toolChoice: openaiToolChoiceToInternal(tool_choice),
       params: buildParams({ temperature, max_tokens, top_p, stop, seed, response_format }),
+      signal: abortOnDisconnect(req, res),
+      // A request that declares tools comes from an agent client, which always
+      // re-sends its full history — the signal a browser provider needs to
+      // tell a new conversation apart from a continuation.
+      stateless: useTools,
+      continuity,
     };
 
     if (stream) {
@@ -537,7 +618,13 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
         res.write("data: [DONE]\n\n");
         res.end();
       } catch (err) {
-        res.write(`data: ${JSON.stringify({ error: { message: (err as Error).message } })}\n\n`);
+        // Headers went out with the first chunk, so a status code is no longer
+        // available — but the stream must still *end* like a stream. Without a
+        // closing chunk and [DONE], an SDK sits waiting until its chunk
+        // timeout instead of surfacing the error.
+        res.write(`data: ${JSON.stringify({ error: errorBody(err) })}\n\n`);
+        send({}, "stop");
+        res.write("data: [DONE]\n\n");
         res.end();
       }
       return;
@@ -589,6 +676,10 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
     } catch (err) {
       if (err instanceof LoginRequiredError || err instanceof ApiKeyMissingError) {
         res.status(401).json({ error: { message: err.message, type: "authentication_error" } });
+        return;
+      }
+      if (err instanceof PromptTooLargeError) {
+        res.status(413).json({ error: { message: err.message, type: "invalid_request_error" } });
         return;
       }
       console.error(`[${model}]`, err);
@@ -663,6 +754,7 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
       profile,
       tools,
       tool_choice,
+      continuity,
       max_tokens,
       temperature,
       top_p,
@@ -716,6 +808,9 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
       tools: toolDefs,
       toolChoice: anthropicToolChoiceToInternal(tool_choice),
       params: buildParams({ max_tokens, temperature, top_p, stop: stop_sequences, seed }),
+      signal: abortOnDisconnect(req, res),
+      stateless: useTools,
+      continuity,
     };
     const id = `msg_${Date.now()}`;
 
@@ -815,7 +910,10 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
         event("message_stop", {});
         res.end();
       } catch (err) {
-        event("error", { error: { type: "api_error", message: (err as Error).message } });
+        const body = errorBody(err);
+        event("error", { error: { type: anthropicErrorType(body.type), message: body.message } });
+        // Close the message properly so the SDK stops waiting for more events.
+        event("message_stop", {});
         res.end();
       }
       return;
@@ -849,6 +947,10 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
     } catch (err) {
       if (err instanceof LoginRequiredError || err instanceof ApiKeyMissingError) {
         res.status(401).json({ type: "error", error: { type: "authentication_error", message: err.message } });
+        return;
+      }
+      if (err instanceof PromptTooLargeError) {
+        res.status(413).json({ type: "error", error: { type: "invalid_request_error", message: err.message } });
         return;
       }
       console.error(`[${model}]`, err);
@@ -1048,6 +1150,9 @@ export function createServer(config: AppConfig, pool: SessionPool, vault?: Vault
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
     } finally {
+      // A login flow navigates the tab through forms and redirects, so any
+      // conversation it was holding is gone.
+      pool.clearState(page);
       pool.release(provider, profile, page);
     }
   });
