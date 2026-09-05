@@ -6,6 +6,10 @@ import {
   renderToolPreamble,
   renderToolResult,
   ToolCallScanner,
+  compactSchema,
+  extractJsonObject,
+  stripChrome,
+  truncateToolResults,
 } from "../src/providers/tool-protocol.js";
 
 const WEATHER = new Set(["get_weather"]);
@@ -86,8 +90,15 @@ describe("renderToolPreamble", () => {
     const p = renderToolPreamble(tools, "auto");
     assert.ok(p.includes("get_weather"));
     assert.ok(p.includes("Get the weather for a city."));
-    assert.ok(p.includes('"type": "object"'));
+    // The default style is compact (a chat box has a length limit); the schema
+    // is still there, just not pretty-printed.
+    assert.ok(p.includes('{"type":"object"}'));
     assert.ok(!p.includes("must call"), "auto needs no directive");
+  });
+
+  it("pretty style keeps the indented JSON Schema", () => {
+    const p = renderToolPreamble(tools, "auto", { style: "pretty" });
+    assert.ok(p.includes('"type": "object"'));
   });
 
   it("returns empty for tool_choice none", () => {
@@ -252,5 +263,92 @@ describe("ToolCallScanner — fenced tool calls", () => {
 
   it("releases a held partial marker at flush", () => {
     assert.equal(feed(["almost <tool_ca"]).text, "almost <tool_ca");
+  });
+});
+
+describe("compactSchema / renderSchema", () => {
+  // A coding agent declares ~12 tools; pretty-printing their schemas produces
+  // tens of kilobytes, which is past what many chat boxes accept in one
+  // message. Compact keeps every fact a model needs to fill the arguments.
+  const readTool = {
+    name: "read",
+    description: "Read a file.",
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Absolute path to the file." },
+        limit: { type: "number", description: "Max lines." },
+        mode: { type: "string", enum: ["text", "bytes"] },
+      },
+      required: ["filePath"],
+    },
+  };
+
+  it("states each parameter on one line with type, requiredness and description", () => {
+    const lines = compactSchema(readTool.parameters);
+    assert.ok(lines.some((l) => l.includes("filePath") && l.includes("required")));
+    assert.ok(lines.some((l) => l.includes("Absolute path to the file.")));
+    assert.ok(lines.some((l) => l.includes("limit") && !l.includes("required")));
+    assert.ok(lines.some((l) => l.includes('one of ["text","bytes"]')));
+  });
+
+  it("falls back to one line of JSON for a schema it cannot summarise", () => {
+    assert.deepEqual(compactSchema({ oneOf: [{ type: "string" }] }), ['{"oneOf":[{"type":"string"}]}']);
+  });
+
+  it("is dramatically smaller than pretty for an agent-sized tool set", () => {
+    const tools = Array.from({ length: 12 }, (_, i) => ({ ...readTool, name: `tool_${i}` }));
+    const compact = renderToolPreamble(tools, "auto", { style: "compact" });
+    const pretty = renderToolPreamble(tools, "auto", { style: "pretty" });
+    assert.ok(compact.length < pretty.length / 2, `${compact.length} vs ${pretty.length}`);
+    // Still complete: every tool and its required parameter survive.
+    for (const t of tools) assert.ok(compact.includes(t.name));
+    assert.ok(compact.includes("filePath"));
+  });
+});
+
+describe("truncateToolResults", () => {
+  it("leaves messages under the cap untouched (and does not copy)", () => {
+    const msgs = [{ role: "tool", content: "short" }];
+    assert.equal(truncateToolResults(msgs, 100), msgs);
+  });
+
+  it("middle-out truncates an oversized tool result and marks the cut", () => {
+    const body = "HEAD" + "x".repeat(500) + "TAIL";
+    const [out] = truncateToolResults([{ role: "tool", content: body }], 120);
+    assert.ok(out.content.length <= 120);
+    assert.ok(out.content.startsWith("HEAD"), "the head survives");
+    assert.ok(out.content.endsWith("TAIL"), "and so does the tail");
+    assert.ok(/omitted by wspr/.test(out.content), "the model is told it is partial");
+  });
+
+  it("only touches tool messages", () => {
+    const msgs = [{ role: "user", content: "y".repeat(500) }];
+    assert.equal(truncateToolResults(msgs, 10), msgs);
+  });
+});
+
+describe("extractJsonObject / stripChrome", () => {
+  it("finds the balanced object and ignores braces inside strings", () => {
+    const raw = 'noise {"a":"}{","b":{"c":1}} more';
+    assert.equal(extractJsonObject(raw), '{"a":"}{","b":{"c":1}}');
+  });
+
+  it("returns null when there is no balanced object", () => {
+    assert.equal(extractJsonObject('{"a":1'), null);
+  });
+
+  it("recovers a call wrapped in a chat UI's copy-button chrome", () => {
+    const raw = 'json\nCopy\n{"name":"f","arguments":{"a":1}}\nCopied!';
+    const call = parseToolCallJson(raw, new Set(["f"]));
+    assert.ok(call, "chrome around the block must not defeat the parse");
+    assert.equal(call.name, "f");
+  });
+
+  it("refuses to carve a call out of text the model actually wrote", () => {
+    // The existing guarantee: unexpected prose degrades to prose, whole. Acting
+    // on the JSON and dropping "broken" would hide what the model said.
+    assert.equal(stripChrome('{"name":"f","arguments":{}} broken'), null);
+    assert.equal(parseToolCallJson('{"name":"f","arguments":{}} broken', new Set(["f"])), null);
   });
 });

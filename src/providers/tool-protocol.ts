@@ -21,6 +21,8 @@
  *   </tool_result>
  */
 
+import type { SchemaStyle } from "../config.js";
+
 export interface ToolDefinition {
   name: string;
   description?: string;
@@ -71,9 +73,14 @@ export function newCallId(): string {
  * call them. Returns "" when `tool_choice` is "none" (or there are no tools),
  * so callers can skip the block entirely.
  */
-export function renderToolPreamble(tools: ToolDefinition[], toolChoice?: ToolChoice): string {
+export function renderToolPreamble(
+  tools: ToolDefinition[],
+  toolChoice?: ToolChoice,
+  opts: { style?: SchemaStyle } = {},
+): string {
   if (!tools.length) return "";
   if (toolChoice === "none") return "";
+  const style = opts.style ?? "compact";
 
   const lines: string[] = [
     "You have access to the following tools. To call one, output a single block " +
@@ -101,8 +108,7 @@ export function renderToolPreamble(tools: ToolDefinition[], toolChoice?: ToolCho
     lines.push(`### Tool: ${tool.name}`);
     if (tool.description) lines.push(tool.description);
     if (tool.parameters) {
-      lines.push("Parameters (JSON Schema):");
-      lines.push(JSON.stringify(tool.parameters, null, 2));
+      lines.push(...renderSchema(tool.parameters, style));
     }
     lines.push("");
   }
@@ -161,6 +167,14 @@ export function parseToolCallJson(raw: string, toolNames?: ReadonlySet<string>):
     (s: string) => smartQuotes(s),
     (s: string) => removeTrailingCommas(s),
     (s: string) => smartQuotes(removeTrailingCommas(s)),
+    // Last resort: carve the balanced object out of the chat UI's own chrome
+    // ("Copy", "Copied!", a language tag) which innerText scrapes along with
+    // the block. Deliberately *not* a general "find the JSON somewhere in
+    // here" — text the model itself wrote around a call still degrades to
+    // prose, because acting on half of an unexpected answer is worse than
+    // showing all of it.
+    (s: string) => stripChrome(s) ?? s,
+    (s: string) => smartQuotes(removeTrailingCommas(stripChrome(s) ?? s)),
   ];
   for (const norm of normable) {
     try {
@@ -356,4 +370,191 @@ function smartQuotes(s: string): string {
 
 function escapeAttr(s: string): string {
   return s.replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Render a tool's parameter schema for the prompt preamble.
+ *
+ * The prompt is typed into a web chat box, and a coding agent declares a dozen
+ * tools whose schemas pretty-print to tens of kilobytes — past what many chat
+ * UIs accept in one message. `compact` states each top-level parameter as one
+ * line, which is what a model actually needs to fill the arguments in, and
+ * falls back to single-line JSON for a schema too nested to summarise. The
+ * other two styles exist to debug a model that is mis-filling arguments.
+ */
+export function renderSchema(params: Record<string, unknown>, style: SchemaStyle): string[] {
+  if (style === "pretty") {
+    return ["Parameters (JSON Schema):", JSON.stringify(params, null, 2)];
+  }
+  if (style === "json") {
+    return ["Parameters (JSON Schema):", JSON.stringify(params)];
+  }
+
+  const lines = compactSchema(params);
+  return lines.length ? ["Parameters:", ...lines] : [];
+}
+
+/**
+ * One line per top-level property: `name (type, required): description`.
+ * Returns [] when the schema has no usable `properties` object, so the caller
+ * can fall back rather than emit a misleading empty parameter list.
+ */
+export function compactSchema(params: Record<string, unknown>): string[] {
+  const props = params?.properties;
+  if (!props || typeof props !== "object" || Array.isArray(props)) {
+    // Not an object schema we can summarise (oneOf, $ref, a bare type…).
+    // One line of JSON still beats dropping the schema on the floor.
+    return [JSON.stringify(params)];
+  }
+  const required = new Set(Array.isArray(params.required) ? (params.required as string[]) : []);
+
+  const lines: string[] = [];
+  for (const [name, raw] of Object.entries(props as Record<string, unknown>)) {
+    const spec = (raw ?? {}) as Record<string, unknown>;
+    const bits: string[] = [];
+    const type = spec.type ?? (Array.isArray(spec.enum) ? "enum" : undefined);
+    if (typeof type === "string") bits.push(type);
+    else if (Array.isArray(type)) bits.push(type.join("|"));
+    if (required.has(name)) bits.push("required");
+    if (Array.isArray(spec.enum)) bits.push(`one of ${JSON.stringify(spec.enum)}`);
+
+    const head = bits.length ? `- ${name} (${bits.join(", ")})` : `- ${name}`;
+    const desc = typeof spec.description === "string" ? spec.description.replace(/\s+/g, " ").trim() : "";
+    lines.push(desc ? `${head}: ${desc}` : head);
+  }
+  return lines;
+}
+
+/** Thrown when a prompt cannot be shrunk under a provider's `maxPromptChars`. */
+export class PromptTooLargeError extends Error {
+  constructor(
+    public provider: string,
+    public chars: number,
+    public limit: number,
+  ) {
+    super(
+      `Prompt for "${provider}" is ${chars} characters, over the ${limit}-character limit. ` +
+        `A chat website silently truncates a long message (or turns it into a file ` +
+        `attachment), so wspr refuses rather than send a half prompt. Raise ` +
+        `maxPromptChars for this provider in providers.yaml, set toolResultMaxChars ` +
+        `to trim tool output, or use an API-key provider for this workload.`,
+    );
+    this.name = "PromptTooLargeError";
+  }
+}
+
+/**
+ * Middle-out truncate any `tool` message whose content exceeds `cap`, keeping
+ * the head and tail (where a file's structure and a command's exit status
+ * live) and marking the cut so the model knows the result is partial rather
+ * than believing the file simply ends there.
+ *
+ * Returns the original array when nothing needed trimming, so the common path
+ * allocates nothing.
+ */
+export function truncateToolResults<T extends { role: string; content: string }>(
+  messages: T[],
+  cap: number,
+): T[] {
+  if (!(cap > 0)) return messages;
+  let changed = false;
+  const out = messages.map((m) => {
+    if (m.role !== "tool" || typeof m.content !== "string" || m.content.length <= cap) return m;
+    changed = true;
+    return { ...m, content: middleOut(m.content, cap) };
+  });
+  return changed ? out : messages;
+}
+
+/** Keep the first ~60% and last ~40% of the budget, with a marker between. */
+export function middleOut(text: string, cap: number): string {
+  if (text.length <= cap) return text;
+  const marker = (n: number) => `\n…[${n} characters omitted by wspr]…\n`;
+  const omitted = text.length - cap;
+  const budget = Math.max(0, cap - marker(omitted).length);
+  const head = Math.ceil(budget * 0.6);
+  const tail = budget - head;
+  return `${text.slice(0, head)}${marker(text.length - head - tail)}${tail ? text.slice(-tail) : ""}`;
+}
+
+/**
+ * Pull the outermost brace-balanced JSON object out of a string, ignoring
+ * braces inside string literals. A chat UI contributes its own chrome to the
+ * scraped text — a "Copy"/"Copied!" button label, a language tag, a stray
+ * prose sentence — which lands inside the `<tool_call>` block and defeats a
+ * plain JSON.parse. Returns null when there is no balanced object.
+ */
+export function extractJsonObject(raw: string): string | null {
+  const start = raw.indexOf("{");
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      if (inString) escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return raw.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+/**
+ * Chat-UI decoration that `innerText()` picks up from around a rendered code
+ * block. Everything here is chrome a *site* drew, never text a model wrote.
+ */
+const CHROME = new Set([
+  "copy",
+  "copy code",
+  "copied",
+  "copied!",
+  "copy to clipboard",
+  "json",
+  "javascript",
+  "js",
+  "python",
+  "text",
+  "plaintext",
+  "\u590d\u5236",
+  "\u5df2\u590d\u5236",
+]);
+
+/**
+ * Return the balanced JSON object inside `raw` — but only when everything
+ * around it is whitespace, code-fence backticks, or a {@link CHROME} token.
+ *
+ * The restriction is the point. `{"name":"f","arguments":{}} broken` must stay
+ * prose: trailing words are the model saying something we did not anticipate,
+ * and silently executing the prefix would hide that. `Copy\n{…}\nCopied!` is
+ * the same call with a button's label glued to it, and is safe to recover.
+ */
+export function stripChrome(raw: string): string | null {
+  const obj = extractJsonObject(raw);
+  if (obj === null) return null;
+
+  const at = raw.indexOf(obj);
+  const outside = [raw.slice(0, at), raw.slice(at + obj.length)];
+  for (const side of outside) {
+    for (const line of side.split(/\n+/)) {
+      const token = line.replace(/`+/g, "").trim().toLowerCase();
+      if (token && !CHROME.has(token)) return null;
+    }
+  }
+  return obj;
 }
