@@ -20,6 +20,11 @@ in the shell.
 | `WSPR_VAULT_KEY` | *(unset)* | Passphrase unlocking the encrypted credential vault. Unset ⇒ `wspr creds` prompts and the `/ui` dashboard can unlock at runtime |
 | `WSPR_AUTO_LOGIN` | `true` *(when vault is unlocked)* | Re-play a stored password when a session lapses. Never retries a failed credential |
 | `WSPR_UI_TOKEN` | *(auto-generated)* | Token guarding the `/ui` credentials dashboard, separate from `WSPR_API_KEY` |
+| `WSPR_MAX_BODY` | `32mb` | Request body limit. Agent clients send whole files back in tool results |
+| `WSPR_MAX_PAGES` | `2` | Concurrent tabs per provider × profile — also how many conversations a browser provider keeps hot. Use 3+ for coding agents |
+| `WSPR_CONTINUITY` | `auto` | `auto`, `tab`, or `replay` — how a browser provider decides between continuing its tab's thread and replaying the transcript. See [Continuity](./api.md#continuity-which-tab-a-turn-lands-in) |
+| `WSPR_AFFINITY_SYSTEM` | `ignore` | `ignore` or `hash` — whether the conversation key covers system-message content |
+| `WSPR_TOOL_SCHEMA_STYLE` | `compact` | `compact`, `json`, or `pretty` — how tool schemas are rendered into a browser prompt |
 | `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY`, `CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`), `DIGITALOCEAN_INFERENCE_KEY`, … | *(unset)* | Keys for [API-key providers](#provider-api-keys). The name is set per provider via `keyEnv` in `providers.yaml`; `baseUrl` may also reference `${VAR}` for things like an account id |
 
 ### PORT
@@ -369,9 +374,28 @@ writing selectors.
 
 ## Concurrency
 
-By default, at most **2 pages per provider** are open simultaneously
-(`maxPerProvider = 2` in `SessionPool`). Requests beyond that wait in a FIFO
-queue until a page is free.
+By default, at most **2 pages per provider × profile** are open simultaneously.
+Requests beyond that wait in a FIFO queue until a page is free. Set
+`WSPR_MAX_PAGES` to change it.
 
-To change the limit, edit `src/session-pool.ts` and rebuild, or open an issue
-requesting a config option.
+Since each tab holds one conversation (see
+[Continuity](./api.md#continuity-which-tab-a-turn-lands-in)), this is also the
+number of conversations a browser provider can keep hot before one of them has
+to replay its transcript into a fresh thread. A coding agent interleaves its
+main loop with title and summary requests, so `WSPR_MAX_PAGES=3` or more is
+worth setting — or point `small_model` at an API-key provider, which
+`wspr config opencode` does for you.
+
+## Agent clients
+
+Four provider-level keys in `providers.yaml` exist for driving a coding agent
+through a **browser** provider, where the prompt is typed into a real chat box:
+
+| Key | Default | Purpose |
+|---|---|---|
+| `maxPromptChars` | *(unlimited)* | Refuse with a 413 rather than let the chat box silently truncate an over-long prompt |
+| `toolResultMaxChars` | *(unset)* | Middle-out truncate one `<tool_result>` body, tried before giving up on the budget |
+| `bufferToolTurns` | `true` | On a turn that declares tools, read the settled answer once instead of streaming deltas — incremental scraping drops the tail on a DOM re-render, which corrupts a JSON tool call |
+| `contextLimit` / `outputLimit` | *(unset)* | Advertised limits, emitted by `wspr config <client>` |
+
+See [clients.md](./clients.md#opencode) for the whole picture.

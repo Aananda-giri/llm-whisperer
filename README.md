@@ -198,6 +198,12 @@ curl http://localhost:9777/v1/embeddings \
   -d '{"model":"digitalocean","input":"hello world"}'
 ```
 
+**Drive a coding agent** — `wspr config opencode <profile> --out opencode.json`
+writes a ready provider block for [opencode](https://opencode.ai). It works well
+over an API-key provider; over a browser provider it is a capable
+read-and-explain agent but a poor code editor. See
+[clients.md](./docs/clients.md#opencode) for the honest limits.
+
 **Protect the API (optional)** — set `WSPR_API_KEY=your-secret` and callers must
 send it as `Authorization: Bearer your-secret`. Handy if you expose it on a
 network.

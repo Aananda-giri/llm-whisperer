@@ -88,6 +88,45 @@ When `newChat: true`, LLM-Whisperer clicks "New Chat" (or reloads the page),
 then sends all messages flattened into one prompt. Use this to switch topics
 or reset context.
 
+#### Continuity: which tab a turn lands in
+
+Sending only the pending turn is safe exactly when the browser tab really does
+hold the rest. Since several conversations can share a provider, LLM-Whisperer
+verifies that rather than assuming it.
+
+Each turn derives a **conversation key** from the messages the client authored
+(`user`, `tool`, and the `tool_call` ids on assistant turns). Assistant prose is
+excluded — the client's copy of it is a lossy re-render, and hashing it would
+mismatch constantly. So is `system` *content* by default: agent clients rebuild
+their system prompt every request with volatile context (working directory,
+today's date), which would otherwise score every turn as a miss.
+
+Given that key, a turn either:
+
+- **continues** — the tab provably holds this history, so only the pending turn
+  is typed in; or
+- **replays** — it does not, so a fresh chat is opened and the whole transcript
+  re-sent.
+
+Two conversations therefore keep their own tabs, and a resumed or compacted one
+rebuilds itself instead of appending to whatever the tab was holding. A
+cancelled request always leaves its tab marked dirty, so it replays next time
+rather than continuing a thread nobody read to the end.
+
+`WSPR_CONTINUITY` overrides the policy globally, and a `continuity` field on the
+request body overrides it per call:
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | Continue on a verified match, replay otherwise. |
+| `tab` | Always continue. The historical behaviour — the tab *is* the conversation. |
+| `replay` | Always start fresh and re-send everything. Slow; good for debugging. |
+
+A lone user message with no `tools` still continues whatever the tab holds, so
+the two-request example below behaves exactly as it always has. A request that
+declares `tools` is treated as coming from a stateless agent client, and opens a
+clean thread instead. See [clients.md](./clients.md#opencode).
+
 > **API-key providers are different.** Providers with an `api:` block (e.g.
 > `openai`, `digitalocean`) call a stateless HTTP API — there is no server-side
 > conversation, so send the **full** `messages` history with every request
